@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[codz]
+*.pyo
+*.so
+*.egg-info/
+/build/
+.eggs/
+
+# 虚拟环境
+.venv
+venv/
+env/
+
+# 测试 & 覆盖率
+.pytest_cache/
+.cache
+.coverage
+coverage/
+htmlcov/
+
+# 环境变量
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# 操作系统
+Thumbs.db
+.DS_Store
+
+# 日志 & 临时文件
+*.log
+*.tmp
+*.temp
+*.bak
+
+# 类型检查缓存
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+
+# 前端构建产物
+frontend/dist/
+
+# Android（构建产物/本地配置，不应提交）
+android/.gradle/
+android/app/build/
+android/local.properties
+android/keystore.properties
+android/*.jks
+android/app/src/main/python/services/
+android/app/src/main/python/init_config.py
+android/app/src/main/python/template/
+android/app/src/main/python/frontend/
+
+# Reasonix 工具私有目录
+.reasonix/

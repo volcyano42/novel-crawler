@@ -1,0 +1,22 @@
+name: Build Distributables
+
+# 手动触发：一键构建全部发行产物（也可单独触发各产物 workflow，便于测试）
+#   - build-windows.yml           Windows x64 portable
+#   - build-linux-x64.yml         Linux x64 portable
+#   - build-linux-arm64.yml       Linux arm64 portable
+#   - build-linux-arm64-termux.yml Termux portable（内置 Python pyroot，开箱即用）
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    uses: ./.github/workflows/build-windows.yml
+
+  linux-x64:
+    uses: ./.github/workflows/build-linux-x64.yml
+
+  linux-arm64:
+    uses: ./.github/workflows/build-linux-arm64.yml
+
+  linux-arm64-termux:
+    uses: ./.github/workflows/build-linux-arm64-termux.yml
