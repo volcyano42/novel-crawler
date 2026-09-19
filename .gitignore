@@ -58,6 +58,7 @@ android/app/src/main/python/novelbase/
 android/app/src/main/python/init_config.py
 android/app/src/main/python/template/
 android/app/src/main/python/frontend/
+android/.req-android.txt
 
 # Reasonix 工具私有目录
 .reasonix/
