@@ -52,7 +52,9 @@ android/app/build/
 android/local.properties
 android/keystore.properties
 android/*.jks
-android/app/src/main/python/services/
+android/app/src/main/python/backend/
+android/app/src/main/python/shared/
+android/app/src/main/python/novelbase/
 android/app/src/main/python/init_config.py
 android/app/src/main/python/template/
 android/app/src/main/python/frontend/
