@@ -45,11 +45,11 @@ chaquopy {
     defaultConfig {
         version = "3.11"
         pip {
-            install("-r", "../../requirements.txt")
+            // 依赖清单由 android/scripts/build-apk.sh 生成：已过滤 playwright/psutil
+            // （Chaquopy 的 pip 块只有 install/options，没有 exclude，无法在此排除包）
+            install("-r", "../.req-android.txt")
             // novelbase 不做 pip 安装（public 仓库无 pyproject.toml）：
             // 由 android/scripts/build-apk.sh 复制源码进 src/main/python
-            exclude("playwright")
-            exclude("psutil")
         }
     }
     sourceSets {
