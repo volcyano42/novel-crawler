@@ -19,7 +19,7 @@ import {
 } from "@/api/endpoints";
 import {DownloadDialog} from "@/features/download/DownloadDialog";
 import {Tooltip, TooltipContent, TooltipProvider, TooltipTrigger} from "@/components/ui/tooltip";
-import {useToast} from "@/components/Toast";
+import {useToast} from "@/components/toast-context";
 import {SessionCache} from "@/utils/sessionCache";
 import {getCachedChapters, setCachedChapters} from "@/utils/chapterCache";
 

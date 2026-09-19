@@ -3,7 +3,7 @@ import {BookOpen, FileDown, Folder, FolderPlus, Heart, MoreHorizontal, Trash2} f
 import {cn} from "@/lib/utils";
 import {useExport, useFavorites, useGroups, useSaveGroups, useToggleFavorite} from "@/hooks/index";
 import {ExportDialog} from "@/features/download/ExportDialog";
-import {useToast} from "@/components/Toast";
+import {useToast} from "@/components/toast-context";
 import {Tooltip, TooltipContent, TooltipProvider, TooltipTrigger} from "@/components/ui/tooltip";
 import {
   DropdownMenu,
