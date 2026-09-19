@@ -46,7 +46,8 @@ chaquopy {
         version = "3.11"
         pip {
             install("-r", "../../requirements.txt")
-            install("file:../..")
+            # novelbase 不做 pip 安装（public 仓库无 pyproject.toml）：
+            # 由 android/scripts/build-apk.sh 复制源码进 src/main/python
             exclude("playwright")
             exclude("psutil")
         }

@@ -8,15 +8,17 @@ cd "$(dirname "$0")/.."
 (cd ../frontend && npm ci && npm run build)
 
 # 2. 复制 Python 运行时模块进 Chaquopy 打包目录（app/src/main/python/，构建产物不提交 git）
-#    server.py 运行时 import 链：backend.* / shared.* / init_config / template / 前端静态文件
-#    novelbase 通过 build.gradle.kts 的 install("file:../..") 以 pip 包安装，不在此复制
+#    server.py 运行时 import 链：backend.* / shared.* / novelbase.* / init_config / template / 前端静态文件
+#    novelbase 不做 pip 安装（public 仓库无 pyproject.toml），与 backend/shared 一样复制源码进 srcDir
 rm -rf app/src/main/python/backend app/src/main/python/shared \
+       app/src/main/python/novelbase \
        app/src/main/python/init_config.py \
        app/src/main/python/template app/src/main/python/frontend
 mkdir -p app/src/main/python
 cp -r ../backend app/src/main/python/backend
 cp -r ../shared app/src/main/python/shared
-find app/src/main/python/backend app/src/main/python/shared \
+cp -r ../novelbase app/src/main/python/novelbase
+find app/src/main/python/backend app/src/main/python/shared app/src/main/python/novelbase \
      -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 cp ../init_config.py app/src/main/python/init_config.py
 cp -r ../template app/src/main/python/template
