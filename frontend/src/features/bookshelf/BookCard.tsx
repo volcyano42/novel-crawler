@@ -111,7 +111,7 @@ export function BookCard({ title, novelId, cover, onRead, className, groups = []
       toast(`导出失败：${(e as Error).message || "网络错误"}`, "error");
     }
     finally { setExporting(false); setShowExport(false); }
-  }, [novelId, exporting, exportMut, toast]);
+  }, [novelId, exporting, exportMut, toast, title]);
 
   const handleDelete = useCallback(() => {
     if (!novelId) return;

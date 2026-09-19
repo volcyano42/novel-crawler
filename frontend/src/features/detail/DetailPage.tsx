@@ -130,7 +130,7 @@ export default function DetailPage() {
       ac.signal,
     );
     return () => ac.abort();
-  }, [novelId, showLocal]);
+  }, [novelId, showLocal, isRemote]);
 
   // 章节缓存：流完成后写回 sessionStorage
   useEffect(() => {
@@ -140,7 +140,10 @@ export default function DetailPage() {
     }
   }, [novelId, showLocal, streaming, localChapters]);
 
-  const remoteMerged = isRemote && remoteChapters ? compareChapters(remoteChapters, localChapters) : [];
+  const remoteMerged = useMemo(
+    () => (isRemote && remoteChapters ? compareChapters(remoteChapters, localChapters) : []),
+    [isRemote, remoteChapters, localChapters],
+  );
   const merged = compareMode && checkMerged ? checkMerged : remoteMerged;
   const chapters = isRemote ? [] : localChapters;
   const showCompare = isRemote || compareMode;
