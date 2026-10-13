@@ -17,7 +17,7 @@ jobs:
       - name: 读取版本号
         id: ver
         run: |
-          VERSION=$(python3 -c "import re;print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('novelbase/__init__.py').read()).group(1))")
+          VERSION=$(python3 -c "import re;print(re.search(r'version = \"([^\"]+)\"', open('pyproject.toml').read()).group(1))")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Build portable (引用 build-portable.sh)
@@ -28,7 +28,7 @@ jobs:
       - name: Upload portable
         uses: actions/upload-artifact@v4
         with:
-          name: novel-crawler-web-portable-${{ steps.ver.outputs.version }}-linux-arm64
-          path: dist/novel-crawler-web-portable-${{ steps.ver.outputs.version }}-linux-arm64.tar.gz
+          name: novel-downloader-web-portable-${{ steps.ver.outputs.version }}-linux-arm64
+          path: dist/novel-downloader-web-portable-${{ steps.ver.outputs.version }}-linux-arm64.tar.gz
           if-no-files-found: error
           retention-days: 3

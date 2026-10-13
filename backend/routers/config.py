@@ -1,8 +1,11 @@
-"""Config 路由 — 拆分 config / groups / sites / formats 四个子资源。"""
+"""Config 路由 — 拆分 config / groups / favorites / sources / formats 子资源。"""
 
 from fastapi import APIRouter, HTTPException
 
 import shared.config as config_service
+from novelbase.source import capabilities
+from shared.config import effective_capabilities
+from backend.services.source_guard import require_known_source
 
 router = APIRouter(prefix="/api/v2/config", tags=["config"])
 
@@ -15,7 +18,6 @@ async def get_config():
     raw = config_service.load_config()
     dl = raw.get("download", {}) or {}
     return {
-        "mode": raw.get("mode", config_service.GLOBAL_DEFAULTS["mode"]),
         "max_workers": dl.get("max_workers", config_service.GLOBAL_DEFAULTS["max_workers"]),
         "notify": config_service.deep_merge(
             config_service.GLOBAL_DEFAULTS["notify"], dl.get("notify", {}),
@@ -27,9 +29,6 @@ async def get_config():
 async def save_config(body: dict):
     raw = config_service.load_config()
     changed = False
-    if "mode" in body and body["mode"] != raw.get("mode"):
-        raw["mode"] = body["mode"]
-        changed = True
     dl = raw.setdefault("download", {})
     if "max_workers" in body:
         dl["max_workers"] = body["max_workers"]
@@ -82,47 +81,71 @@ async def remove_favorite(novel_id: str):
     return {"ok": ok, "removed": ok}
 
 
-# ── sites/{website}.yaml ────────────────────────────
+# ── sources/{source_name}.yaml（按书源）──────────────
 
-@router.get("/sites/{website}")
-async def get_site(website: str):
-    raw = config_service.load_yaml(_cfg_dir / "sites" / f"{website}.yaml")
-    entry: dict = {}
-    for mode in ("browser", "requests"):
-        entry[mode] = {
-            v: config_service.deep_merge(
-                config_service.ENGINE_DEFAULTS[mode],
-                config_service.get_mode_variant_config(raw, mode, v),
-            )
-            for v in config_service.mode_variants(raw, mode)
-        }
-    # api 是 variant 容器，不是模式配置
-    api_section = raw.get("api", {}) if isinstance(raw.get("api"), dict) else {}
-    entry["api"] = {k: v for k, v in api_section.items() if isinstance(v, dict)}
-    entry["api_variants"] = list(entry["api"].keys())
-    return entry
+@router.get("/sources/{source_name}")
+async def get_source_config(source_name: str):
+    """三层合并后的书源配置 + 能力映射。
+
+    形状：`{source_name, capabilities: {cap: 有效mode}, declared_capabilities: {cap: 声明mode},
+    config: {cap: {…完整合并字段（含 mode）…}}}`。
+    `capabilities` 为**有效 mode**（用户层 `{cap}.mode` 覆盖书源声明），
+    `declared_capabilities` 为书源声明值（前端「恢复默认」用）。
+    """
+    require_known_source(source_name)
+    return {
+        "source_name": source_name,
+        "concurrency": config_service.source_concurrency(source_name),
+        "capabilities": effective_capabilities(source_name),
+        "declared_capabilities": capabilities(source_name),
+        "source_group": config_service.source_group(source_name),
+        "source_alias": config_service.source_alias(source_name),
+        "config": config_service.merged_source_config(source_name),
+    }
 
 
-@router.put("/sites/{website}")
-async def save_site(website: str, body: dict):
-    existing = config_service.load_yaml(_cfg_dir / "sites" / f"{website}.yaml")
-    for mode in ("browser", "requests"):
-        if mode in body and isinstance(body[mode], dict):
-            existing_mode = existing.get(mode, {}) if isinstance(existing.get(mode), dict) else {}
-            for v, cfg in body[mode].items():
-                if isinstance(cfg, dict):
-                    existing_mode[v] = config_service.deep_merge(
-                        existing_mode.get(v, {}), cfg,
-                    )
-            existing[mode] = existing_mode
-    # api mode 只保留 variant 子 dict，过滤标量字段
-    if "api" in body and isinstance(body["api"], dict):
-        api_existing = existing.get("api", {}) if isinstance(existing.get("api"), dict) else {}
-        for k, v in body["api"].items():
-            if isinstance(v, dict):
-                api_existing[k] = config_service.deep_merge(api_existing.get(k, {}), v)
-        existing["api"] = {k: v for k, v in api_existing.items() if isinstance(v, dict)}
-    config_service.save_yaml(_cfg_dir / "sites" / f"{website}.yaml", existing)
+@router.put("/sources/{source_name}")
+async def save_source_config(source_name: str, body: dict):
+    """只写用户层 `sites/{source_name}.yaml`：顶层元信息 + 逐能力段 `deep_merge`。
+
+    不把三层合并后的全量写回（否则用户层被灌满出厂/系统默认值）。
+    能力段的 `mode` 键特判：传入字符串 → 覆盖；传入 `null` → 删除该键（恢复书源声明）。
+    """
+    require_known_source(source_name)
+    path = config_service.CONFIG_DIR / "sites" / f"{source_name}.yaml"
+    existing = config_service.load_yaml(path)
+    existing.pop("enabled", None)   # enabled 已废弃：顺手清理旧用户层残留键
+    # 顶层 concurrency：正整数写入用户层，非法值忽略（不写坏 yaml）
+    if "concurrency" in body and config_service._is_positive_int(body["concurrency"]):
+        existing["concurrency"] = body["concurrency"]
+    # 顶层元信息：字符串写入用户层（strip 后非空），空串 = 删除该键（回落出厂 / source_name）
+    for key in ("source_group", "source_alias"):
+        if key in body:
+            raw = body[key]
+            text = raw.strip() if isinstance(raw, str) else ""
+            if text:
+                existing[key] = text
+            else:
+                existing.pop(key, None)
+    cfg_body = body.get("config")
+    if isinstance(cfg_body, dict):
+        for cap, partial in cfg_body.items():
+            if not isinstance(partial, dict):
+                continue
+            section = existing.get(cap)
+            section = dict(section) if isinstance(section, dict) else {}
+            mode = partial.get("mode")
+            if mode is None and "mode" in partial:
+                section.pop("mode", None)        # 恢复默认：删掉覆盖
+            section = config_service.deep_merge(
+                section, {k: v for k, v in partial.items() if k != "mode"})
+            if mode is not None:
+                section["mode"] = mode
+            if section:
+                existing[cap] = section
+            else:
+                existing.pop(cap, None)
+    config_service.save_yaml(path, existing)
     return {"status": "ok"}
 
 

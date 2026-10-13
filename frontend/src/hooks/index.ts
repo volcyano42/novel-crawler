@@ -9,7 +9,6 @@ import {
   deleteSearchHistory,
   deleteTask,
   downloadChapters,
-  downloadPlatforms,
   exportTaskStatus,
   fetchChapterList,
   fetchMeta,
@@ -21,7 +20,7 @@ import {
   getGroups,
   getMeta,
   getSearchHistory,
-  getSiteConfig,
+  getSourceConfig,
   listChapters,
   listNovels,
   listTasks,
@@ -31,8 +30,9 @@ import {
   saveFormatConfig,
   saveGlobalConfig,
   saveGroups,
-  saveSiteConfig,
+  saveSourceConfig,
   searchDownload,
+  setNovelSource,
   triggerExport,
 } from "@/api/endpoints";
 
@@ -88,11 +88,11 @@ export function useGroups() {
   });
 }
 
-export function useSiteConfig(website: string | undefined) {
+export function useSourceConfig(source: string | undefined) {
   return useQuery({
-    queryKey: ["site-config", website],
-    queryFn: () => getSiteConfig(website!),
-    enabled: !!website,
+    queryKey: ["source-config", source],
+    queryFn: () => getSourceConfig(source!),
+    enabled: !!source,
     staleTime: Infinity,
   });
 }
@@ -102,14 +102,6 @@ export function useFormatConfig(format: string | undefined) {
     queryKey: ["format-config", format],
     queryFn: () => getFormatConfig(format!),
     enabled: !!format,
-    staleTime: Infinity,
-  });
-}
-
-export function usePlatforms() {
-  return useQuery({
-    queryKey: ["platforms"],
-    queryFn: downloadPlatforms,
     staleTime: Infinity,
   });
 }
@@ -131,9 +123,7 @@ export function useTasks(enabled: boolean) {
   });
 }
 
-export function useSearch(params: {
-  platform: string; query: string; mode?: string; variant?: string;
-} | null) {
+export function useSearch(params: { query: string; source?: string; sources?: string[] } | null) {
   return useQuery({
     queryKey: ["search", params],
     queryFn: () => searchDownload(params!),
@@ -147,12 +137,11 @@ export function useSearch(params: {
 export function useRemoteChapters(
   novelId: string | undefined,
   url: string | undefined,
-  mode?: string,
-  variant?: string,
+  source?: string,
 ) {
   return useQuery({
-    queryKey: ["remote-chapters", novelId, url, mode, variant],
-    queryFn: () => fetchChapterList(novelId!, url!, mode, variant),
+    queryKey: ["remote-chapters", novelId, url, source],
+    queryFn: () => fetchChapterList(novelId!, url!, source),
     enabled: !!novelId && !!url,
     staleTime: 30_000,
   });
@@ -165,6 +154,18 @@ export function useDeleteNovel() {
   return useMutation({
     mutationFn: deleteNovel,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["novels"] }),
+  });
+}
+
+export function useSetNovelSource(novelId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (sourceName: string) => setNovelSource(novelId, sourceName),
+    onSuccess: () => {
+      // 详情页那一行读 ["novel-meta", id]，书架卡片读 ["novels"]
+      qc.invalidateQueries({ queryKey: ["novel-meta", novelId] });
+      qc.invalidateQueries({ queryKey: ["novels"] });
+    },
   });
 }
 
@@ -213,8 +214,8 @@ export function useSearchHistory() {
 export function useAddSearchHistory() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ platform, keyword, mode, variant }: { platform: string; keyword: string; mode?: string; variant?: string }) =>
-      addSearchHistory(platform, keyword, mode ?? "", variant ?? ""),
+    mutationFn: ({ source_name, keyword }: { source_name: string; keyword: string }) =>
+      addSearchHistory(source_name, keyword),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["search-history"] }),
   });
 }
@@ -227,11 +228,19 @@ export function useDeleteSearchHistory() {
   });
 }
 
-export function useSaveSiteConfig(website: string) {
+export function useSaveSourceConfig(source: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: Record<string, unknown>) => saveSiteConfig(website, data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["site-config", website] }),
+    mutationFn: (data: {
+      concurrency?: number; config?: Record<string, Record<string, unknown>>;
+      source_group?: string; source_alias?: string;
+    }) =>
+      saveSourceConfig(source, data),
+    onSuccess: () => {
+      // 两侧都要失效：设置页读 ["source-config", src]，设置页折叠条（SourceAccordion）读 ["sources"]
+      qc.invalidateQueries({ queryKey: ["source-config", source] });
+      qc.invalidateQueries({ queryKey: ["sources"] });
+    },
   });
 }
 
@@ -249,12 +258,10 @@ export function useDownloadMutation() {
       novelId: string;
       chapters: { id: string; url: string; novel_id: string; title: string; order: number; volume: string | null }[];
       title: string;
-      mode?: string;
-      variant?: string;
+      source?: string;
       novelUrl?: string;
-      platform?: string;
     }) =>
-      downloadChapters(args.novelId, args.chapters, args.title, args.mode, args.variant, args.novelUrl, args.platform),
+      downloadChapters(args.novelId, args.chapters, args.title, args.source, args.novelUrl),
   });
 }
 
@@ -298,8 +305,8 @@ export function useExport() {
 
 export function useFetchMeta() {
   return useMutation({
-    mutationFn: (args: { url: string; mode?: string; variant?: string }) =>
-      fetchMeta(args.url, args.mode, args.variant),
+    mutationFn: (args: { url: string; source?: string }) =>
+      fetchMeta(args.url, args.source),
   });
 }
 

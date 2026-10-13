@@ -4,11 +4,15 @@ from base64 import b64decode, b64encode
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from backend.schemas import BackendSwitch, NovelMeta, ChapterData, ChapterBrief
+from backend.schemas import BackendSwitch, NovelMeta, ChapterData, ChapterBrief, SetSourceRequest
 from novelbase.core.options import StorageOptions
 from novelbase.core.storage import create_storage
 from novelbase.models.novel import Novel, Illustration
 from shared.config import get_database_url
+from shared.user_data import (
+    delete_novel_source, get_novel_source, get_novel_sources, set_novel_source,
+)
+from backend.services.source_guard import require_known_source
 
 router = APIRouter(prefix="/api/v2/storage", tags=["storage"])
 
@@ -60,6 +64,7 @@ def _novel_to_meta(novel) -> NovelMeta:
         author=novel.author, description=novel.description,
         tags=list(novel.tags) if novel.tags else None, count=novel.count, cover=cover_data,
         extra=dict(novel.extra) if novel.extra else None,
+        source_name=get_novel_source(novel.id),
     )
 
 def _chapter_to_brief(ch) -> ChapterBrief:
@@ -85,8 +90,11 @@ async def switch_backend(body: BackendSwitch): return {"backend": body.backend, 
 @router.get("/novel")
 async def list_novels():
     store = _get_storage()
+    novels = list(store.iter_metas(include_images=True))
+    # 一次批量查来源（避免逐本 N+1）
+    sources = get_novel_sources([n.id for n in novels])
     result: list[dict] = []
-    for novel in store.iter_metas(include_images=True):
+    for novel in novels:
         result.append({
             "title": novel.title, "url": novel.url, "id": novel.id,
             "serial": novel.serial, "author": novel.author,
@@ -94,6 +102,7 @@ async def list_novels():
             "tags": list(novel.tags) if novel.tags else None,
             "count": novel.count,
             "cover": _cover_to_response(novel.cover, thumbnail=True),
+            "source_name": sources.get(novel.id),
         })
     return result
 
@@ -129,11 +138,23 @@ async def save_meta(novel_id: str, body: NovelMeta):
     store.save_meta(novel)
     return {"status": "ok", "novel_id": novel_id}
 
+@router.put("/novel/{novel_id}/source")
+async def set_novel_source_route(novel_id: str, body: SetSourceRequest):
+    """换源：把该书的来源标记改写为给定书源（持久化到 user_data.novel_sources）。
+
+    来源记录独立于 storage；未下载的书也能先换源，故不校验小说是否已入库
+    （「先换源、再下载」是合法场景；`novel_id` 前后一致）。
+    """
+    source_name = require_known_source(body.source_name)
+    set_novel_source(novel_id, source_name)
+    return {"status": "ok", "novel_id": novel_id, "source_name": source_name}
+
 @router.delete("/novel/{novel_id}")
 async def delete_novel(novel_id: str):
     store = _get_storage()
     if not store.load_meta(novel_id): raise HTTPException(404, "小说不存在")
     store.delete_novel(novel_id)
+    delete_novel_source(novel_id)
     return {"status": "deleted", "novel_id": novel_id}
 
 @router.get("/novel/{novel_id}/chapters")

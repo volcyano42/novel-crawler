@@ -6,110 +6,121 @@ from __future__ import annotations
 import asyncio
 
 from cli.config import (
-    load_main_config, load_site_config, load_format_configs,
+    load_main_config, load_format_configs,
     build_options, get_novel_group, load_groups,
 )
-from cli.ui import _select, _text_input, _create_progress, _advance_progress
+from cli.ui import _select, _text_input
+from shared.config import effective_capabilities, default_source_names, display_name, source_concurrency
 from novelbase import (
     resolve_meta, resolve_chapter_list, resolve_chapter, search,
     create_engine,
 )
-from novelbase.source import register_source, platform_from_url
+from novelbase.source import list_sources
 from novelbase.utils.logger import get_logger
+from shared.user_data import get_novel_source
 
 _log = get_logger("cli.interactive")
 
-# 会话内记住 (platform, mode) → variant 选择，避免每次创建引擎重复询问
-_variant_cache: dict[tuple[str, str], str] = {}
 
-
-def _platform_from_url(url: str) -> str:
-    """从 URL 推断平台（数据驱动）。未知 URL 抛 ValueError。"""
-    plat = platform_from_url(url)
-    if plat:
-        return plat
-    raise ValueError(f"未识别书源 URL: {url}")
-
-
-def _resolve_variant(platform: str, mode: str) -> str | None:
-    """解析当前 mode 的 variant：≤1 个直接用唯一项；多于一个时询问并会话级记住。"""
-    from cli.config import mode_variants, resolve_variant as _resolve
-    site_cfg = load_site_config(platform)
-    resolved = _resolve(site_cfg, mode, None)
-    if resolved is not None:
-        return resolved
-    variants = mode_variants(site_cfg, mode)
-    if len(variants) <= 1:
-        return variants[0] if variants else None
-    key = (platform, mode)
-    if key in _variant_cache:
-        return _variant_cache[key]
-    sel = _select(f"平台 {platform} 的 {mode} 模式有 {len(variants)} 个 variant，请选择", [(v, v) for v in variants])
-    if sel is None:
-        sel = variants[0]
-        print(f"未选择，使用默认 variant: {sel}")
-    _variant_cache[key] = sel
-    return sel
-
-
-def _get_engine(platform: str = "fanqie"):
-    """从当前配置创建引擎（variant 按当前 mode 解析）。"""
-    cfg = load_main_config()
-    site_cfg = load_site_config(platform)
-    mode = cfg.get("mode") or site_cfg.get("mode", "browser")
-    options = build_options(cfg, site_cfg, _resolve_variant(platform, mode))
+def _get_engine(source_name: str = "fanqie", mode: str | None = None):
+    """按书源名创建引擎；mode 缺省取书源首个能力声明的**有效** mode。"""
+    if mode is None:
+        caps = effective_capabilities(source_name)
+        mode = next(iter(caps.values()), "browser")
+    options = build_options(source_name, mode)
     return create_engine(options)
+
+
+def _make_engines(source_name: str):
+    """构造 engines 解析器：`engines(mode) -> engine`（按 mode 懒建并缓存）。
+
+    缓存暴露为 `_engines.cache`，便于调用方结束时 close 所有引擎。
+    """
+    cache: dict[str, object] = {}
+
+    def _engines(mode: str):
+        if mode not in cache:
+            cache[mode] = _get_engine(source_name, mode)
+        return cache[mode]
+
+    _engines.cache = cache  # type: ignore[attr-defined]
+    return _engines
 
 
 # -- Search ---------------------------------------------------
 
 
 def do_search(query: str) -> tuple[str | None, str | None]:
-    """搜索小说。返回 (url, platform) 或 (None, None)。"""
-    # URL 输入 → 自动推断平台
+    """搜索小说。返回 (url, source_name) 或 (None, None)。
+
+    关键字分支：并发全部可用书源（`default_source_names()`），结果汇总标注来源
+    后由用户选择；URL 分支：core 已无 URL→书源推断能力，需用户手选书源。
+    """
     if query.startswith("http://") or query.startswith("https://"):
-        platform = _platform_from_url(query)
-        engine = _get_engine(platform)
+        source_names = list_sources()
+        if not source_names:
+            print("没有可用书源")
+            return None, None
+        source_name = _select("选择书源", [(n, n) for n in source_names])
+        if not source_name:
+            return None, None
+        engines = _make_engines(source_name)
         try:
-            novel = asyncio.run(resolve_meta(query, engine=engine, skip_delay=True))
+            novel = asyncio.run(resolve_meta(query, source_name, engines, skip_delay=True,
+                                             mode_overrides=effective_capabilities(source_name)))
             print(f"\n📖 {novel.title} — {novel.author}")
-            return novel.url, platform
+            return novel.url, source_name
         except Exception as e:
             print(f"获取小说信息失败: {e}")
             return None, None
         finally:
-            engine.close()
+            for eng in getattr(engines, "cache", {}).values():
+                try:
+                    eng.close()
+                except Exception:
+                    pass
 
-    # 关键字搜索 → 让用户选平台
-    platforms = list(load_main_config().get("sites", {}).keys()) or list(register_source().keys())
-    labels = {k: v.get("show_name", k) for k, v in register_source().items()}
-    choices = [(labels.get(p, p), p) for p in platforms]
-    platform = _select("选择平台", choices)
-    if not platform:
+    # 关键字搜索 → 并发全部可用书源，结果汇总标注来源
+    sources = default_source_names()
+    if not sources:
+        print("没有可用的书源")
         return None, None
 
-    engine = _get_engine(platform)
-    try:
-        results = asyncio.run(search(platform, query, engine=engine, skip_delay=True))
-    except Exception as e:
-        print(f"搜索失败: {e}")
-        return None, None
-    finally:
-        engine.close()
+    async def _run():
+        async def _one(name: str):
+            # 每个源各用自己的引擎（杜绝「同 mode 源共用首个源引擎」）
+            engines = _make_engines(name)
+            try:
+                return await search(name, query, engines, skip_delay=True,
+                                    mode_overrides=effective_capabilities(name))
+            except Exception as e:      # 单个源失败不影响其它源
+                print(f"  [{name}] 搜索失败: {e}")
+                return None
+            finally:
+                for eng in getattr(engines, "cache", {}).values():
+                    try:
+                        eng.close()
+                    except Exception:
+                        pass
 
+        groups = await asyncio.gather(*(_one(n) for n in sources))
+        return [r for r in groups if r is not None]
+
+    results = asyncio.run(_run())
     if not results:
         print("未找到结果")
         return None, None
 
     print(f"\n搜索 '{query}' 的结果:")
     for i, r in enumerate(results, 1):
-        print(f" {i}. {r.title} — {r.author}")
-    choices_list = [(f"{r.title} — {r.author}", i - 1) for i, r in enumerate(results, 1)]
+        print(f" {i}. {r.title} — {r.author}  [{display_name(getattr(r, 'source_name', ''))}]")
+    choices_list = [(f"{r.title} — {r.author} [{display_name(getattr(r, 'source_name', ''))}]", i - 1)
+                    for i, r in enumerate(results, 1)]
     sel = _select("选择小说", choices_list)
     if sel is None:
         return None, None
     if 0 <= sel < len(results):
-        return results[sel].url, platform
+        return results[sel].url, getattr(results[sel], "source_name", "")
     return None, None
 
 
@@ -123,18 +134,29 @@ def do_download(
     """交互式下载：询问分组后复用 cli.core 的全量下载（async 经 asyncio.run）。"""
     from cli.core import _do_download_inner
 
-    platform = _platform_from_url(url)
-    engine = _get_engine(platform)
+    source_names = list_sources()
+    if not source_names:
+        print("没有可用书源")
+        return
+    source_name = _select("选择书源", [(n, n) for n in source_names])
+    if not source_name:
+        print("已取消选择书源")
+        return
+    engines = _make_engines(source_name)
     try:
         g = _text_input(f"归入分组 [{group}]")
         if g:
             group = g
         asyncio.run(_do_download_inner(
-            engine, url, group, format_configs,
-            max_workers=max_workers, skip_delay=True,
+            source_name, url, group, format_configs,
+            max_workers=max_workers, skip_delay=True, engines=engines,
         ))
     finally:
-        engine.close()
+        for eng in getattr(engines, "cache", {}).values():
+            try:
+                eng.close()
+            except Exception:
+                pass
 
 
 # -- Update ---------------------------------------------------
@@ -145,10 +167,15 @@ async def _update_one_async(novel, max_workers: int) -> int:
     from cli.core import _get_storage
 
     storage = _get_storage()
-    platform = _platform_from_url(novel.url)
-    engine = _get_engine(platform)
+    source_name = get_novel_source(novel.id) or ""
+    if not source_name:
+        print("  无法确定书源")
+        return 0
+    engines = _make_engines(source_name)
+    _overrides = effective_capabilities(source_name)
     try:
-        remote_chapters = await resolve_chapter_list(novel.url, engine=engine)
+        remote_chapters = await resolve_chapter_list(novel.url, source_name, engines,
+                                                     mode_overrides=_overrides)
         if not remote_chapters:
             print("  无法获取远程章节")
             return 0
@@ -163,12 +190,15 @@ async def _update_one_async(novel, max_workers: int) -> int:
 
         print(f"  {len(existing)}/{len(remote_chapters)} \033[1;32m+{len(new_chapters)}\033[0m")
 
-        sem = asyncio.Semaphore(max_workers)
+        # 章节并发上限 = min(max_workers, 书源并发额度)（与 backend 一致）
+        concurrency = min(max_workers, source_concurrency(source_name))
+        sem = asyncio.Semaphore(max(1, concurrency))
 
         async def _dl(ch):
             async with sem:
                 try:
-                    resolved = await resolve_chapter(ch, engine=engine)
+                    resolved = await resolve_chapter(ch, source_name, engines,
+                                                     mode_overrides=_overrides)
                     if resolved:
                         storage.save_chapter(novel, resolved)
                         return True
@@ -183,8 +213,6 @@ async def _update_one_async(novel, max_workers: int) -> int:
     except Exception as e:
         print(f"  更新失败: {e}")
         return 0
-    finally:
-        engine.close()
 
 
 def do_update(format_configs: dict, max_workers: int = 3):
@@ -243,41 +271,6 @@ def do_update(format_configs: dict, max_workers: int = 3):
     print(f"更新完成: 新增 {ok} 章")
 
 
-# -- Visit site -----------------------------------------------
-
-
-def do_visit_site() -> None:
-    """用 BrowserEngine 打开所选平台网站。"""
-    from novelbase import create_engine as _create_engine
-
-    sources = register_source()
-    labels = {k: v.get("show_name", k) for k, v in sources.items()}
-    platform = _select("选择平台", [(labels.get(k, k), k) for k in sources.keys()])
-    if not platform:
-        return
-    hosts = sources[platform].get("hosts", ())
-    if not hosts:
-        print(f"平台 {labels.get(platform, platform)} 没有配置网址")
-        return
-    url = f"https://{hosts[0]}"
-
-    cfg = load_main_config()
-    site_cfg = load_site_config(platform)
-    options = build_options(cfg, site_cfg)
-    options.set_mode("browser")
-    engine = _create_engine(options)
-
-    async def _open():
-        page = await engine.new_page()
-        await page.goto(url)
-        input(f"\n已打开 {url}，按回车关闭浏览器...")
-
-    try:
-        asyncio.run(_open())
-    finally:
-        engine.close()
-
-
 # -- Main menu ------------------------------------------------
 
 
@@ -314,7 +307,6 @@ def main():
             print("4. 🔁 重新导出")
             print("5. 🗑️  删除小说")
             print("6. ⚙️  设置")
-            print("7. 🌐 访问平台")
             print("0. 🚪 退出")
 
             try:
@@ -343,12 +335,8 @@ def main():
                 do_delete()
 
             elif ch == "6":
-                from cli.config import load_site_config as _lsc
                 from cli.menus import do_settings
-                cfg, site_cfg = do_settings(cfg, "fanqie", _lsc("fanqie"))
-
-            elif ch == "7":
-                do_visit_site()
+                cfg = do_settings(cfg)
 
             elif ch == "0":
                 break

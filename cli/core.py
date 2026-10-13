@@ -4,15 +4,16 @@
 from __future__ import annotations
 
 from cli.config import (
-    load_main_config, load_groups, load_site_config, add_novel_to_group,
-    build_options,
+    load_main_config, load_groups, add_novel_to_group, build_options,
 )
 from novelbase import (
     resolve_meta, resolve_chapter_list, resolve_chapter, export,
     create_engine, StorageOptions,
 )
 from novelbase.core.storage import create_storage
+from shared.config import effective_capabilities, source_concurrency
 from novelbase.utils.logger import get_logger
+from shared.user_data import get_novel_source
 
 _log = get_logger("cli.core")
 
@@ -54,27 +55,36 @@ def _get_storage():
     return _storage
 
 
-def _platform_from_url(url: str) -> str:
-    """从 URL 推断平台（数据驱动）。"""
-    from novelbase.source import platform_from_url
-    plat = platform_from_url(url)
-    if plat:
-        return plat
-    raise ValueError(f"未识别书源 URL: {url}")
+def _make_engines(source_name: str, options_hook=None):
+    """构造 engines(mode)->engine（按书源名懒建并缓存）。
 
+    `options_hook(options)` 在 `create_engine` 之前调用——供 cli.main 注入导出配置装配
+    （`cli.core` 不能反向 import `cli.main`，故用依赖注入）。
 
-def _get_engine(platform: str = "fanqie", mode: str | None = None,
-                variant: str | None = None):
-    """Create a fresh engine from current config.
-
-    mode/variant：指定时用于创建引擎（与 cli.main._get_engine 一致）；
-    缺省保持原行为（config.yaml 的 mode / variant 自动选择）。
+    缓存暴露为 `_engines.cache`，便于调用方在结束时 close 所有引擎。
     """
-    cfg = load_main_config()
-    if mode:
-        cfg["mode"] = mode
-    site_cfg = load_site_config(platform)
-    options = build_options(cfg, site_cfg, variant)
+    cache: dict[str, object] = {}
+
+    def _engines(mode: str):
+        if mode not in cache:
+            cache[mode] = _get_engine(source_name, mode, options_hook)
+        return cache[mode]
+
+    _engines.cache = cache  # type: ignore[attr-defined]
+    return _engines
+
+
+def _get_engine(source_name: str, mode: str | None = None, options_hook=None):
+    """按书源名创建引擎；mode 缺省取书源首个能力声明的**有效** mode。
+
+    与 `cli.main._get_engine` 统一：配置来自 `shared.config` 的三层合并。
+    """
+    if mode is None:
+        caps = effective_capabilities(source_name)
+        mode = next(iter(caps.values()), "browser")
+    options = build_options(source_name, mode)
+    if options_hook is not None:
+        options_hook(options)
     return create_engine(options)
 
 
@@ -82,17 +92,25 @@ def _get_engine(platform: str = "fanqie", mode: str | None = None,
 
 
 async def _do_download_inner(
-    engine, url: str, group: str,
+    source_name: str, url: str, group: str,
     format_configs: dict, max_workers: int = 3, skip_delay: bool=False,
-    skip_export: bool = True,
+    skip_export: bool = True, engines=None,
 ) -> None:
-    """Core download flow (engine provided). Non-interactive: 全量下载。"""
+    """Core download flow（按书源名分发）。Non-interactive: 全量下载。
+
+    engines：`engines(mode)->engine` 解析器；缺省时按 source_name 懒建。
+    """
     import asyncio
+
+    if engines is None:
+        engines = _make_engines(source_name)
 
     # 1. Get metadata
     print("正在获取小说信息...")
+    _overrides = effective_capabilities(source_name)
     try:
-        novel = await resolve_meta(url, engine=engine, skip_delay=skip_delay)
+        novel = await resolve_meta(url, source_name, engines, skip_delay=skip_delay,
+                                   mode_overrides=_overrides)
     except Exception as e:
         print(f"获取小说信息失败: {e}")
         return
@@ -101,7 +119,8 @@ async def _do_download_inner(
     # 2. Get chapter list
     print("正在获取章节列表...")
     try:
-        chapters = await resolve_chapter_list(novel.url, engine=engine, skip_delay=skip_delay)
+        chapters = await resolve_chapter_list(novel.url, source_name, engines, skip_delay=skip_delay,
+                                              mode_overrides=_overrides)
     except Exception as e:
         print(f"获取章节列表失败: {e}")
         return
@@ -118,6 +137,9 @@ async def _do_download_inner(
 
     storage.save_meta(novel)
     add_novel_to_group(novel_id, group)
+
+    from shared.user_data import set_novel_source
+    set_novel_source(novel_id, source_name)
 
     existing = list(storage.load_chapters(novel_id))
     existing_set = {c.order for c in existing}
@@ -136,12 +158,16 @@ async def _do_download_inner(
     incomplete_count = 0
     errors: list[str] = []
 
-    sem = asyncio.Semaphore(max_workers)
+    # 章节并发上限 = min(max_workers, 书源并发额度)：与 backend 一致，
+    # 受书源级 concurrency 约束（默认 1）。
+    concurrency = min(max_workers, source_concurrency(source_name))
+    sem = asyncio.Semaphore(max(1, concurrency))
 
     async def _download_one(ch) -> tuple[bool, str, str]:
         async with sem:
             try:
-                resolved = await resolve_chapter(ch, engine=engine)
+                resolved = await resolve_chapter(ch, source_name, engines,
+                                                 mode_overrides=_overrides)
                 if resolved is None:
                     return False, ch.title, "章节内容为空"
                 storage.save_chapter(novel, resolved)
@@ -198,12 +224,10 @@ async def _do_download_inner(
 # ── Update ───────────────────────────────────────────
 
 
-async def do_update(format_configs: dict, max_workers: int = 3,
-                    mode: str | None = None, variant: str | None = None):
+async def do_update(format_configs: dict, max_workers: int = 3):
     """非交互更新：全部已下载小说更新到最新章节。
 
-    mode/variant：更新引擎的创建参数（如 --mode api --variant oiapi）；
-    None 时按每本小说平台使用 config 默认引擎。
+    按每本小说的 `source_name` 建引擎；无法确定书源的旧书跳过并提示。
     """
     import asyncio
     from cli.config import get_novel_group
@@ -248,10 +272,15 @@ async def do_update(format_configs: dict, max_workers: int = 3,
     updated = 0
     for i, novel in enumerate(targets, 1):
         print(f"\n── [{i}/{total}] 正在更新: {novel.title} ──")
-        platform = _platform_from_url(novel.url)
-        engine = _get_engine(platform, mode, variant)
+        source_name = get_novel_source(novel.id) or ""
+        if not source_name:
+            print("  无法确定书源，跳过（请重新下载该小说以记录书源）")
+            continue
+        engines = _make_engines(source_name)
+        _overrides = effective_capabilities(source_name)
         try:
-            remote_chapters = await resolve_chapter_list(novel.url, engine=engine)
+            remote_chapters = await resolve_chapter_list(novel.url, source_name, engines,
+                                                         mode_overrides=_overrides)
             if not remote_chapters:
                 print("  无法获取远程章节")
                 continue
@@ -266,12 +295,15 @@ async def do_update(format_configs: dict, max_workers: int = 3,
 
             print(f"  {len(existing)}/{len(remote_chapters)} \033[1;32m+{len(new_chapters)}\033[0m")
 
-            sem = asyncio.Semaphore(max_workers)
+            # 章节并发上限 = min(max_workers, 书源并发额度)（与 backend 一致）
+            concurrency = min(max_workers, source_concurrency(source_name))
+            sem = asyncio.Semaphore(max(1, concurrency))
 
             async def _dl(ch):
                 async with sem:
                     try:
-                        resolved = await resolve_chapter(ch, engine=engine)
+                        resolved = await resolve_chapter(ch, source_name, engines,
+                                                         mode_overrides=_overrides)
                         if resolved:
                             storage.save_chapter(novel, resolved)
                             return True
@@ -287,6 +319,10 @@ async def do_update(format_configs: dict, max_workers: int = 3,
         except Exception as e:
             print(f"  更新失败: {e}")
         finally:
-            engine.close()
+            for eng in getattr(engines, "cache", {}).values():
+                try:
+                    eng.close()
+                except Exception:
+                    pass
 
     print(f"\n更新完成: 共更新 {updated} 章")

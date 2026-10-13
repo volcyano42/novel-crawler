@@ -1,4 +1,4 @@
-﻿# Build Nuitka onefile exe: novel-crawler-web-{version}-windows-x64.exe
+﻿# Build Nuitka onefile exe: novel-downloader-web-{version}-windows-x64.exe
 # Usage: .\build-nuitka.ps1 [-Version <version>] [-MaxRetries <n>]
 # Requires: Python 3.13, npm, MSVC (VS 2022 Build Tools)
 param(
@@ -16,9 +16,9 @@ try {
 
     # ── 版本号 ──
     if (-not $Version) {
-        $content = Get-Content "novelbase\__init__.py" -Raw
-        $m = [regex]::Match($content, '__version__\s*=\s*"([^"]+)"')
-        if (-not $m.Success) { throw "无法从 novelbase\__init__.py 获取版本号" }
+        $content = Get-Content pyproject.toml -Raw
+        $m = [regex]::Match($content, 'version = "([^"]+)"')
+        if (-not $m.Success) { throw "无法从 pyproject.toml 获取版本号" }
         $Version = $m.Groups[1].Value
     }
     Write-Host "=== Nuitka build v$Version ($(Get-Date -Format 'HH:mm:ss')) ===" -ForegroundColor Cyan
@@ -48,7 +48,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Nuitka 安装失败" }
 
     # ── Nuitka 编译（自动重试） ──
-    $exeName = "novel-crawler-web-$Version.exe"
+    $exeName = "novel-downloader-web-$Version.exe"
     $exePath = Join-Path $distDir $exeName
     $nuitkaArgs = @(
         "-m", "nuitka",

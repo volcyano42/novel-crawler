@@ -10,6 +10,7 @@ export interface NovelMeta {
   tags: string[] | null; count: number | null;
   cover: { raw_data: string | null; alt: string | null; url: string | null; format: string | null } | null;
   extra?: { rating?: number } | null;
+  source_name?: string | null;
 }
 
 export interface ChapterBrief {
@@ -24,7 +25,7 @@ export interface ChapterData extends ChapterBrief {
 
 export interface SearchResult {
   title: string; author: string; url: string; description: string | null;
-  platform: string;
+  source_name: string;
   cover_url?: string | null;
   extra?: { rating?: number } | null;
 }
@@ -40,6 +41,8 @@ export interface TaskInfo {
   current_title: string;
   chapters: ChapterStatus[];
   eta?: number;
+  source_name?: string;
+  created_at?: number;
 }
 
 export interface EngineOptions {
@@ -69,13 +72,24 @@ export interface NotifyConfig {
 }
 
 export interface GlobalConfig {
-  mode: string; max_workers: number;
+  max_workers: number;
   notify: NotifyConfig;
 }
 
-export interface SiteConfig {
-  browser: Record<string, EngineOptions>; requests: Record<string, EngineOptions>; api: Record<string, EngineOptions>;
-  api_variants: string[];
+export interface SourceConfig {
+  source_name: string;
+  /** 书源级并发额度（顶层；跨任务共享，默认 1） */
+  concurrency: number;
+  /** 能力段 → 有效 mode（如 {search: "api"}） */
+  capabilities: Record<string, string>;
+  /** 能力段 → 书源声明的 mode（「恢复默认」用） */
+  declared_capabilities: Record<string, string>;
+  /** 能力段 → 三层合并后的完整配置 */
+  config: Record<string, Record<string, unknown>>;
+  /** 分组名（"" = 未分组；出厂预置 + 用户层覆盖）。 */
+  source_group: string;
+  /** 显示别名（"" = 未设，显示 source_name）。 */
+  source_alias: string;
 }
 
 export type GroupsConfig = Record<string, Record<string, object>>;
@@ -83,10 +97,6 @@ export type GroupsConfig = Record<string, Record<string, object>>;
 export interface ExportTaskResult {
   task_id: string; status: string; progress: number;
   formats?: string[]; path?: string | null; error?: string | null;
-}
-
-export interface EngineInfo {
-  id: string; mode: string; platform: string;
 }
 
 // ── Storage ────────────────────────────────────────
@@ -101,6 +111,11 @@ export function getMeta(novelId: string) {
 
 export function deleteNovel(novelId: string) {
   return apiDelete(`/storage/novel/${novelId}`);
+}
+
+export function setNovelSource(novelId: string, sourceName: string) {
+  return apiPut<{ status: string; novel_id: string; source_name: string }>(
+    `/storage/novel/${novelId}/source`, { source_name: sourceName });
 }
 
 export function listChapters(
@@ -160,29 +175,25 @@ export function streamChapters(
 
 // ── Download ───────────────────────────────────────
 
-export function searchDownload(params: {
-  platform: string; query: string; mode?: string; variant?: string;
-}) {
-  const qs = new URLSearchParams({ query: params.query, platform: params.platform });
-  if (params.mode) qs.set("mode", params.mode);
-  if (params.variant) qs.set("variant", params.variant);
+export function searchDownload(params: { query: string; source?: string; sources?: string[] }) {
+  const qs = new URLSearchParams({ query: params.query });
+  if (params.source) qs.set("source", params.source);
+  if (params.sources?.length) qs.set("sources", params.sources.join(","));
   return apiGet<SearchResult[]>(`/download/search?${qs}`);
 }
 
-export function fetchMeta(url: string, mode?: string, variant?: string, signal?: AbortSignal) {
+export function fetchMeta(url: string, source?: string, signal?: AbortSignal) {
   const qs = new URLSearchParams();
-  if (mode) qs.set("mode", mode);
-  if (variant) qs.set("variant", variant);
+  if (source) qs.set("source", source);
   const suffix = qs.toString() ? `?${qs}` : "";
   return apiPost<NovelMeta>(`/download/novel${suffix}`, { url }, signal);
 }
 
 export function fetchChapterList(
-  novelId: string, url: string, mode?: string, variant?: string, signal?: AbortSignal,
+  novelId: string, url: string, source?: string, signal?: AbortSignal,
 ) {
   const qs = new URLSearchParams({ url });
-  if (mode) qs.set("mode", mode);
-  if (variant) qs.set("variant", variant);
+  if (source) qs.set("source", source);
   return apiGet<ChapterBrief[]>(`/download/novel/${novelId}/chapters?${qs}`, signal);
 }
 
@@ -190,16 +201,12 @@ export function downloadChapters(
   novelId: string,
   chapters: { id: string; url: string; novel_id: string; title: string; order: number; volume: string | null }[],
   title: string,
-  mode?: string,
-  variant?: string,
+  source?: string,
   novelUrl?: string,
-  platform?: string,
 ) {
   const qs = new URLSearchParams({ title });
-  if (mode) qs.set("mode", mode);
-  if (variant) qs.set("variant", variant);
+  if (source) qs.set("source", source);
   if (novelUrl) qs.set("novel_url", novelUrl);
-  if (platform) qs.set("platform", platform);
   return apiPost<{ task_id: string; total: number }>(`/download/novel/${novelId}/chapter?${qs}`, chapters);
 }
 
@@ -219,14 +226,35 @@ export function deleteTask(taskId: string) {
   return apiDelete(`/download/task/${taskId}`);
 }
 
-export function downloadPlatforms() {
-  return apiGet<{ id: string; label: string }[]>("/download/platform");
+/** 单个书源的运行时信息（GET /download/sources 的条目）。 */
+export interface SourceInfo {
+  capabilities: Record<string, string>;
+  /** 分组名（"" = 未分组；出厂预置 + 用户层覆盖）。 */
+  source_group: string;
+  /** 显示别名（"" = 未设，显示 source_name）。 */
+  source_alias: string;
 }
 
-export type SourceCapabilities = Record<string, Record<string, string[]>>;
-
 export function fetchSources() {
-  return apiGet<Record<string, { hosts: string[]; show_name: string; capabilities: Record<string, Record<string, string[]>> }>>("/download/sources");
+  return apiGet<Record<string, SourceInfo>>("/download/sources");
+}
+
+/** 选源 UI 用的书源项：name = source_name（技术键，提交用），alias/group 供显示与分组。 */
+export interface SourceOption {
+  name: string;
+  alias: string;
+  group: string;        // "" = 未分组
+}
+
+/** 把 useSources() 的响应转成选源列表：未设别名时 alias 回落 source_name，未设分组时 group 为空串。
+ * 搜索页 / 换源对话框 / 书架共用本函数。 */
+export function toSourceOptions(sources?: Record<string, SourceInfo> | null): SourceOption[] {
+  if (!sources) return [];
+  return Object.entries(sources).map(([name, info]) => ({
+    name,
+    alias: info.source_alias || name,
+    group: info.source_group || "",
+  }));
 }
 
 // ── Config ─────────────────────────────────────────
@@ -262,7 +290,7 @@ export function removeFavorite(novelId: string) {
 // ── Search History ─────────────────────────────────
 
 export interface SearchHistoryItem {
-  id: number; platform: string; mode: string; variant: string; keyword: string; searched_at: string;
+  id: number; source_name: string; keyword: string; searched_at: string;
 }
 
 export interface SearchHistoryGroup {
@@ -273,20 +301,26 @@ export function getSearchHistory() {
   return apiGet<{ history: SearchHistoryGroup[] }>("/history/search");
 }
 
-export function addSearchHistory(platform: string, keyword: string, mode: string, variant: string) {
-  return apiPost<{ status: string }>("/history/search", { platform, keyword, mode, variant });
+export function addSearchHistory(source_name: string, keyword: string) {
+  return apiPost<{ status: string }>("/history/search", { source_name, keyword });
 }
 
 export function deleteSearchHistory(historyId: number) {
   return apiDelete(`/history/search/${historyId}`);
 }
 
-export function getSiteConfig(website: string) {
-  return apiGet<SiteConfig>(`/config/sites/${website}`);
+export function getSourceConfig(source: string) {
+  return apiGet<SourceConfig>(`/config/sources/${source}`);
 }
 
-export function saveSiteConfig(website: string, data: Partial<SiteConfig>) {
-  return apiPut<void>(`/config/sites/${website}`, data);
+export function saveSourceConfig(
+  source: string,
+  data: {
+    concurrency?: number; config?: Record<string, Record<string, unknown>>;
+    source_group?: string; source_alias?: string;
+  },
+) {
+  return apiPut<void>(`/config/sources/${source}`, data);
 }
 
 export function getFormatConfig(format: string) {

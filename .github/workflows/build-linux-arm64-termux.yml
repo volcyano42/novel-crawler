@@ -17,7 +17,7 @@ jobs:
       - name: 读取版本号
         id: ver
         run: |
-          VERSION=$(python3 -c "import re;print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('novelbase/__init__.py').read()).group(1))")
+          VERSION=$(python3 -c "import re;print(re.search(r'version = \"([^\"]+)\"', open('pyproject.toml').read()).group(1))")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       # 在 termux-docker 容器预装 Python 依赖（bionic 环境，与真机 Termux 一致），
@@ -51,7 +51,21 @@ jobs:
                 done
                 export ANDROID_API_LEVEL=24
                 # Termux 排除 browser 模式依赖（psutil 不支持 Android）；容器无 /tmp，用挂载卷
-                grep -v "^playwright" /src/requirements.txt > /src/.req-termux.txt
+                # 另：Termux(bionic) 编不了 uvloop（要 libuv 的 ./configure，容器无 autotools）
+                # → 去掉 uvicorn[standard] 的 C/Rust extras，只装纯 Python 的 uvicorn
+                #   （与 APK 的 build-apk.sh、pydantic<2 同一条思路）
+                # ！这里必须用双引号：整个脚本外层是 bash -c '...'，
+                #   内层再用单引号会提前终止外层字符串，导致 \[ 的反斜杠被 shell 吃掉，
+                #   sed 收到 [standard] 字符类 → 匹配不到 uvicorn[standard]（2026-09-27 踩到）
+                grep -v "^playwright" /src/requirements.txt \
+                  | sed "s/^uvicorn\[standard\]/uvicorn/" > /src/.req-termux.txt
+                # 自检：替换若未生效就立刻失败，别等 uvloop 编译十几分钟才暴露
+                echo "--- .req-termux.txt 的 uvicorn 行 ---"
+                grep -n "uvicorn" /src/.req-termux.txt || true
+                if grep -q "uvloop\|\[standard\]" /src/.req-termux.txt; then
+                  echo "::error::requirements 仍含 uvicorn 的 extras（uvloop 在 Termux/bionic 编不过）"
+                  exit 1
+                fi
                 pip install --break-system-packages -r /src/.req-termux.txt
                 # 导出依赖 site-packages
                 mkdir -p /src/deps
@@ -73,6 +87,10 @@ jobs:
               sleep 15
             fi
           done
+          # 快速失败：预装必须真的产出 deps/ 与 pyroot/bin/python，否则会拖到打包阶段
+          # （打出 1MB 空壳）与验证阶段才暴露，掩盖真正的根因
+          test -n "$(ls -A deps 2>/dev/null)" || { echo "::error::deps/ 为空 → 预装失败"; exit 1; }
+          ls pyroot/bin/python* >/dev/null 2>&1 || { echo "::error::pyroot/bin/python 缺失 → 预装失败"; exit 1; }
 
       - name: Build portable (引用 build-portable.sh)
         run: |
@@ -97,7 +115,7 @@ jobs:
               echo "=== python --version ==="
               python --version 2>&1 || true
               echo "=== 启动 uvicorn ==="
-              python -m uvicorn services.backend.main:app --host 127.0.0.1 --port 8000 > server.log 2>&1 &
+              python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 > server.log 2>&1 &
               SERVER_PID=$!
               CODE="000"
               for i in $(seq 1 20); do
@@ -110,7 +128,7 @@ jobs:
               echo ""
               curl -s http://127.0.0.1:8000/api/v2/novels | head -c 80
               echo ""
-              head -8 server.log 2>/dev/null || echo "无 server.log"
+              tail -40 server.log 2>/dev/null || echo "无 server.log"
               [ "$CODE" = "200" ] || { echo "启动验证失败"; exit 1; }
               kill $SERVER_PID 2>/dev/null || true
             '
@@ -118,7 +136,7 @@ jobs:
       - name: Upload portable
         uses: actions/upload-artifact@v4
         with:
-          name: novel-crawler-web-portable-${{ steps.ver.outputs.version }}-termux
-          path: dist/novel-crawler-web-portable-${{ steps.ver.outputs.version }}-termux.tar.gz
+          name: novel-downloader-web-portable-${{ steps.ver.outputs.version }}-termux
+          path: dist/novel-downloader-web-portable-${{ steps.ver.outputs.version }}-termux.tar.gz
           if-no-files-found: error
           retention-days: 3

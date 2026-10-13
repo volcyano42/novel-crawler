@@ -1,4 +1,4 @@
-"""novel-crawler 自定义异常体系。
+"""novel-downloader 自定义异常体系。
 
 所有自定义异常继承自 ``NovelDownloaderError``，按职责分为：
 - 网络层: ``NetworkError``
@@ -75,6 +75,7 @@ class FeatureNotSupportedError(NovelDownloaderError):
 
     def __init__(self, message: str = "Feature not supported"):
         super().__init__(message)
+
 
 
 class StorageError(NovelDownloaderError):

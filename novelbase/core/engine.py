@@ -9,15 +9,16 @@ from typing import Any
 
 import httpx
 
-from .exceptions import NetworkError
-from .options import Options, BrowserOptions, APIOptions, RequestsOptions
 from ..utils.encoding import detect_encoding
 from ..utils.logger import get_logger, mask_key
+from .exceptions import NetworkError
+from .options import APIOptions, BrowserOptions, Options, RequestsOptions
 
 _log = get_logger("novelbase.core.engine")
 
 
 def _async_playwright():
+    """惰性 import playwright（依赖缺失时抛 ImportError）。"""
     from playwright.async_api import async_playwright
     return async_playwright()
 
@@ -34,18 +35,11 @@ def _resolve_proxy(proxies: dict | None) -> httpx.Proxy | None:
 
 
 class Engine(ABC):
-    """网络层基类 — 三种实现共享的接口。"""
+    """网络层基类 — 三种实现共享的接口。
 
-    _instances: dict[str, Engine] = {}
-    _registry_keys: list[str] = []
-
-    def __init__(self) -> None:
-        mode = getattr(self, "name", type(self).__name__)
-        idx = sum(1 for k in Engine._registry_keys if k.startswith(f"{mode}_")) + 1
-        key = f"{mode}_{idx}"
-        Engine._instances[key] = self
-        Engine._registry_keys.append(key)
-        self._registry_key = key
+    不维护全局实例注册表：引擎生命周期由调用方负责（`close` / `aclose`），
+    跨请求复用的缓存见 `backend.services.engine_manager`。
+    """
 
     @abstractmethod
     def fetch_text(self, url: str, skip_delay: bool = False, encoding: str | None = None, **kwargs) -> str:
@@ -72,13 +66,9 @@ class Engine(ABC):
         """批量下载图片字节，返回与 urls 等长的 bytes 列表（失败项为 b""）。"""
         ...
 
-    def close(self) -> None:
+    # 基类默认无资源可释放；有意不标 abstractmethod，子类按需覆盖
+    def close(self) -> None:  # noqa: B027
         """释放所有资源（进程退出前调用）。"""
-        Engine._instances.pop(self._registry_key, None)
-        try:
-            Engine._registry_keys.remove(self._registry_key)
-        except ValueError:
-            pass
 
     async def aclose(self) -> None:
         """异步关闭（供 async 上下文 await，确保资源完全释放后再退出）。
@@ -469,22 +459,50 @@ class BrowserEngine(Engine):
         return asyncio.run(self._fetch_in_isolated_session(url, skip_delay=skip_delay, **kwargs))
 
     async def _fetch_in_isolated_session(self, url, skip_delay=False, **kwargs) -> str:
+        """同步入口的独立会话：自启自停，不触碰懒启动的 browser。
+
+        与 `_ensure_browser_locked()` 一致地使用 `user_data_dir` —— 否则配了持久化
+        登录态（profile）的书源走同步 `fetch_text` 时会**静默降级为匿名访问**
+        （浏览器里登录过也不生效，症状是「章节内容为空」且无任何报错）。
+        """
+        if self.options.user_data_dir and self._context is not None:
+            # 同一 profile 不能被两个 Chromium 会话同时使用（SingletonLock）
+            raise RuntimeError(
+                "user_data_dir 已被本引擎的持久化会话占用，无法再开同步会话；"
+                "请改用 async_fetch_text"
+            )
         async with _async_playwright() as pw:
             browser_type = getattr(pw, self.options.browser_type, None)
             if browser_type is None:
                 raise ValueError(f"不支持的 browser_type: {self.options.browser_type}")
-            browser = await browser_type.launch(
-                headless=self.options.headless,
-                args=self.options.extra_args or [],
-            )
+            browser = None
+            if self.options.user_data_dir:
+                # 持久化上下文自带 browser，关闭时只 close context
+                context = await browser_type.launch_persistent_context(
+                    str(self.options.user_data_dir),
+                    headless=self.options.headless,
+                    args=self.options.extra_args or [],
+                    viewport=self.options.viewport,
+                )
+            else:
+                browser = await browser_type.launch(
+                    headless=self.options.headless,
+                    args=self.options.extra_args or [],
+                )
+                if self.options.viewport:
+                    context = await browser.new_context(viewport=self.options.viewport)
+                else:
+                    context = await browser.new_context()
             try:
-                page = await browser.new_page()
+                page = await context.new_page()
                 try:
                     return await self._fetch_with_page(page, url, skip_delay=skip_delay)
                 finally:
                     await page.close()
             finally:
-                await browser.close()
+                await context.close()
+                if browser is not None:
+                    await browser.close()
 
     def fetch_json(self, url, skip_delay=False, **kwargs) -> dict[str, Any]:
         text = self.fetch_text(url=url, skip_delay=skip_delay, **kwargs)

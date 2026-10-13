@@ -4,9 +4,9 @@ import {BookOpen, ChevronDown, ChevronLeft, Download, ExternalLink, Image, Refre
 import {
     compareChapters,
     useDownloadMutation,
-    useGlobalConfig,
     useNovelMeta,
     useRemoteChapters,
+    useSetNovelSource,
     useSources
 } from "@/hooks/index";
 import {
@@ -15,19 +15,13 @@ import {
     fetchChapterList,
     listChapters,
     type NovelMeta,
-    streamChapters
+    streamChapters,
+    toSourceOptions
 } from "@/api/endpoints";
-import {DownloadDialog} from "@/features/download/DownloadDialog";
+import {SourcePickerDialog} from "@/features/detail/SourcePickerDialog";
 import {Tooltip, TooltipContent, TooltipProvider, TooltipTrigger} from "@/components/ui/tooltip";
 import {useToast} from "@/components/toast-context";
-import {SessionCache} from "@/utils/sessionCache";
 import {getCachedChapters, setCachedChapters} from "@/utils/chapterCache";
-
-function platformFromUrl(url?: string): string {
-  if (!url) return "fanqie";
-  if (url.includes("fanqienovel.com") || url.includes("changdunovel.com")) return "fanqie";
-  return "fanqie";
-}
 
 interface MergedChapter {
   remote: ChapterBrief;
@@ -38,32 +32,25 @@ export default function DetailPage() {
   const { novelId } = useParams<{ novelId: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  const st = location.state as { remoteUrl?: string; searchMode?: string; searchVariant?: string; meta?: NovelMeta } | null;
+  const st = location.state as { remoteUrl?: string; source?: string; meta?: NovelMeta } | null;
   const remoteUrl = st?.remoteUrl;
-  const searchMode = st?.searchMode ?? "browser";
-  const searchVariant = st?.searchVariant;
+  const source = st?.source;
   const toast = useToast();
 
   const { data: localMeta, isLoading: metaLoading } = useNovelMeta(novelId);
   // 有 state 中的 remoteUrl，或本地 meta 404（小说未下载）→ 远程模式
   const isRemote = !!remoteUrl || (!metaLoading && !localMeta);
-  // 远程模式缺 URL 时从 novelId 推断（纯数字 ID → 番茄）
-  const effectiveRemoteUrl = remoteUrl || (isRemote && /^\d+$/.test(novelId!) ? `https://fanqienovel.com/page/${novelId}` : undefined);
-  const plat = platformFromUrl(st?.meta?.url ?? effectiveRemoteUrl ?? localMeta?.url);
+  const effectiveRemoteUrl = remoteUrl;
   const { data: sources } = useSources();
-  const sourceCaps = sources?.[plat]?.capabilities ?? {};
-  const platModes = Object.keys(sourceCaps);
-  const platVariantsByMode: Record<string, string[]> = {};
-  for (const [m, variants] of Object.entries(sourceCaps)) {
-    if (variants && typeof variants === "object" && !Array.isArray(variants)) {
-      platVariantsByMode[m] = Object.keys(variants).filter(k => k !== "");
-    }
-  }
-  const { data: remoteChapters } = useRemoteChapters(isRemote ? novelId : undefined, effectiveRemoteUrl, searchMode, searchVariant);
+  const sourceOptions = useMemo(() => toSourceOptions(sources), [sources]);
+  const { data: remoteChapters } = useRemoteChapters(isRemote ? novelId : undefined, effectiveRemoteUrl, source);
   const downloadMut = useDownloadMutation();
-  const { data: globalConfig } = useGlobalConfig();
 
   const novel = st?.meta ?? localMeta ?? null;
+  // 换源成功后立即覆盖显示：远端/未下载的书没有 localMeta 可刷新，那一行否则不会变
+  const [sourceOverride, setSourceOverride] = useState<string | null>(null);
+  // 来源：本地书取 user_data 记录，远端书取进入详情页时手选的书源；换过源则用覆盖值
+  const bookSource = sourceOverride ?? localMeta?.source_name ?? st?.source;
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(isRemote);
@@ -227,14 +214,13 @@ export default function DetailPage() {
     }
   };
 
-  const [dialogVariant, setDialogVariant] = useState<"download" | "check" | null>(null);
-  const [savedMode, setSavedMode] = useState("");
-  const [savedVariant, setSavedVariant] = useState("");
+  const [showSourcePicker, setShowSourcePicker] = useState(false);
+  const { mutate: submitSource, isPending: submittingSource } = useSetNovelSource(novelId!);
 
-  const runCheckUpdate = useCallback(async (mode: string, variant?: string) => {
+  const runCheckUpdate = useCallback(async (src: string) => {
     setChecking(true);
     try {
-      const remote = await fetchChapterList(novelId!, effectiveRemoteUrl ?? novel?.url ?? "", mode, variant);
+      const remote = await fetchChapterList(novelId!, effectiveRemoteUrl ?? novel?.url ?? "", src);
       if (!remote.length) { toast("远端无章节数据"); return; }
       let localAll: ChapterBrief[];
       try {
@@ -253,7 +239,7 @@ export default function DetailPage() {
     finally { setChecking(false); }
   }, [novelId, effectiveRemoteUrl, novel?.url, toast]);
 
-  const runDownloadLocal = useCallback((mode: string, variant?: string) => {
+  const runDownloadLocal = useCallback((src: string) => {
     if (!novelId || selectedIds.size === 0) return;
     const selected = localChapters
       .filter(c => selectedIds.has(c.id))
@@ -262,16 +248,14 @@ export default function DetailPage() {
       novelId,
       chapters: selected,
       title: novel?.title ?? novelId,
-      mode,
-      variant,
+      source: src,
       novelUrl: novel?.url,
-      platform: platformFromUrl(novel?.url),
     });
     setSelectedIds(new Set());
     toast(`「${novel?.title ?? novelId}」已开始下载`, "success");
   }, [novelId, selectedIds, localChapters, novel?.title, novel?.url, toast, downloadMut]);
 
-  const runDownload = useCallback((mode: string, variant?: string) => {
+  const runDownload = useCallback((src: string) => {
     if (!novelId || selectedIds.size === 0) return;
     const selected = merged
       .filter(mc => selectedIds.has(mc.remote.id))
@@ -280,45 +264,30 @@ export default function DetailPage() {
       novelId,
       chapters: selected,
       title: novel?.title ?? novelId,
-      mode,
-      variant,
+      source: src,
       novelUrl: novel?.url,
-      platform: platformFromUrl(novel?.url),
     });
     setSelectedIds(new Set());
     toast(`「${novel?.title ?? novelId}」已开始下载`, "success");
   }, [novelId, selectedIds, merged, novel?.title, novel?.url, toast, downloadMut]);
 
   const handleCheckUpdate = useCallback(() => {
-    // 优先用本 session 选过的模式，兜底用 Settings 中的全局配置
-    const mode = sessionStorage.getItem("nd:mode") ?? globalConfig?.mode ?? "browser";
-    const variant = sessionStorage.getItem("nd:variant") ?? undefined;
-    setSavedMode(mode);
-    setSavedVariant(variant ?? "");
-    setDialogVariant("check");
-  }, [globalConfig?.mode]);
+    if (!bookSource) { toast("请先点旁边「换源」选定书源", "error"); return; }
+    runCheckUpdate(bookSource);
+  }, [bookSource, runCheckUpdate, toast]);
 
   const handleDownloadClick = useCallback(() => {
-    setSavedMode(sessionStorage.getItem("nd:mode") ?? globalConfig?.mode ?? "browser");
-    setSavedVariant(sessionStorage.getItem("nd:variant") ?? "");
-    setDialogVariant("download");
-  }, [globalConfig?.mode]);
+    if (!bookSource) { toast("请先点旁边「换源」选定书源", "error"); return; }
+    if (showCompare) runDownload(bookSource);
+    else runDownloadLocal(bookSource);
+  }, [bookSource, showCompare, runDownload, runDownloadLocal, toast]);
 
-  const handleDialogConfirm = useCallback((mode: string, variant?: string) => {
-    setSavedMode(mode);
-    setSavedVariant(variant ?? "");
-    SessionCache.setMode(mode);
-    SessionCache.setVariant(variant);
-    const v = dialogVariant;
-    setDialogVariant(null);
-    if (v === "check") {
-      runCheckUpdate(mode, variant);
-    } else if (showCompare) {
-      runDownload(mode, variant);
-    } else {
-      runDownloadLocal(mode, variant);
-    }
-  }, [dialogVariant, runCheckUpdate, runDownload, runDownloadLocal, showCompare]);
+  const handlePickSource = useCallback((src: string) => {
+    submitSource(src, {
+      onSuccess: () => { toast(`已换源：${src}`, "success"); setSourceOverride(src); setShowSourcePicker(false); },
+      onError: (e) => toast((e as Error).message || "换源失败", "error"),
+    });
+  }, [submitSource, toast]);
 
   // meta 加载完成后发现是远程小说，开启 loading 等远程章节
   useEffect(() => {
@@ -348,7 +317,13 @@ export default function DetailPage() {
                 <ExternalLink className="h-4 w-4 opacity-0 group-hover/title:opacity-30 transition-opacity shrink-0" strokeWidth={1.5} />
               </a>
               <p className="text-sm text-slate-500">{novel.author}</p>
-              <p className="text-xs text-slate-400 font-mono">{novel.id}</p>
+              <div className="flex items-center gap-2 pt-0.5">
+                <p className="truncate text-xs text-slate-500">{bookSource || "未记录书源"}</p>
+                <button onClick={() => setShowSourcePicker(true)}
+                  className="shrink-0 rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-200">
+                  换源
+                </button>
+              </div>
               <p className="text-sm text-slate-500">{streamError ? "" : `${localChapters.length}/${novel.serial} 章`}{newCount > 0 && <span className="ml-1.5 inline-flex items-center rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-500 breathing-badge">+{newCount}</span>} · {novel.count ? `${novel.count.toLocaleString()} 字` : "字数未知"}</p>
               {novel.extra?.rating != null && <p className="text-xs text-slate-500 pt-0.5">{novel.extra.rating} 分</p>}
               {novel.tags && novel.tags.length > 0 && <div className="flex flex-wrap gap-1 pt-1">{novel.tags.map(t => <span key={t} className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">{t}</span>)}</div>}
@@ -480,11 +455,10 @@ export default function DetailPage() {
       </button>
       )}
 
-      <DownloadDialog open={dialogVariant !== null} onClose={() => setDialogVariant(null)}
-        dialogMode={dialogVariant ?? "download"} novelTitle={novel?.title ?? ""} chapterCount={selectedIds.size}
-        initialMode={savedMode} initialVariant={savedVariant}
-        availableModes={platModes} variantsByMode={platVariantsByMode}
-        onStart={handleDialogConfirm} />
+      <SourcePickerDialog open={showSourcePicker} onClose={() => setShowSourcePicker(false)}
+        novelTitle={novel?.title ?? ""} sources={sourceOptions} current={bookSource}
+        submitting={submittingSource}
+        onPick={handlePickSource} />
     </div>
   );
 }

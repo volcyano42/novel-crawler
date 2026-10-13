@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build portable package: novel-crawler-web-portable-v{version}-{platform}.tar.gz
+# Build portable package: novel-downloader-web-portable-v{version}-{platform}.tar.gz
 # 参考 build-portable.ps1（Windows 用 embedded python），本脚本覆盖 Linux x64/arm64 + Termux
 # 平台解释器：
 #   linux-x64 / linux-arm64 : python-build-standalone（独立 Python，无需系统安装）
@@ -49,7 +49,7 @@ fi
 
 # ── 版本号 ──
 if [ -z "$VERSION" ]; then
-    VERSION=$("$PYTHON" -c "import re;print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('novelbase/__init__.py', encoding='utf-8').read()).group(1))")
+    VERSION=$("$PYTHON" -c "import re;print(re.search(r'version = \"([^\"]+)\"', open('pyproject.toml', encoding='utf-8').read()).group(1))")
 fi
 echo "版本: $VERSION | 平台: $PLATFORM"
 
@@ -90,7 +90,7 @@ if [ -n "$PY_TARGET" ]; then
 import json, os, re, urllib.request
 req = urllib.request.Request(
     "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest",
-    headers={"User-Agent": "novel-crawler-build", "Accept": "application/vnd.github+json"},
+    headers={"User-Agent": "novel-downloader-build", "Accept": "application/vnd.github+json"},
 )
 data = json.load(urllib.request.urlopen(req, timeout=30))
 tag = data["tag_name"]
@@ -178,11 +178,13 @@ elif ! "$PY" -c "import uvicorn" >/dev/null 2>&1; then
     # 裸包（无 pyroot 无 python-deps）：系统 python 无依赖，自举安装
     echo "[首次运行] 安装项目依赖（需联网，约 10-20 分钟）..."
     export ANDROID_API_LEVEL=24
-    grep -v '^playwright' requirements.txt > req-termux.txt
+    # 去掉 uvicorn[standard] 的 C/Rust extras（uvloop 在 Termux/bionic 上编不了）
+    grep -v '^playwright' requirements.txt | sed 's/^uvicorn\[standard\]/uvicorn/' > req-termux.txt
+    grep -n "uvicorn" req-termux.txt || true
     "$PY" -m pip install -r req-termux.txt
 fi
 
-echo "启动 novel-crawler-web (http://127.0.0.1:8000)..."
+echo "启动 novel-downloader-web (http://127.0.0.1:8000)..."
 SERVER_PID=""
 cleanup() { [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null; exit 0; }
 trap cleanup INT TERM
@@ -208,7 +210,7 @@ cd "$(dirname "$0")"
 export PYTHONHOME="$PWD/python"
 export PATH="$PWD/python/bin:$PATH"
 
-echo "启动 novel-crawler-web (http://127.0.0.1:8000)..."
+echo "启动 novel-downloader-web (http://127.0.0.1:8000)..."
 SERVER_PID=""
 cleanup() { [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null; exit 0; }
 trap cleanup INT TERM
@@ -231,7 +233,7 @@ chmod +x "$DIST_DIR/start.sh"
 
 # ── 6. 说明文档 ──
 cat > "$DIST_DIR/启动说明.txt" <<EOF
-=== novel-crawler-web 便携版 (v$VERSION, $PLATFORM) ===
+=== novel-downloader-web 便携版 (v$VERSION, $PLATFORM) ===
 
 使用方法：
   1. 解压到任意目录
@@ -252,7 +254,7 @@ EOF
 
 # ── 7. 打包 ──
 echo "--- 打包 ($(date +%H:%M:%S)) ---"
-ARCHIVE="dist/novel-crawler-web-portable-${VERSION}-${PLATFORM}.tar.gz"
+ARCHIVE="dist/novel-downloader-web-portable-${VERSION}-${PLATFORM}.tar.gz"
 tar -czf "$ARCHIVE" -C dist portable
 SIZE_MB=$(du -m "$ARCHIVE" | cut -f1)
 echo "完成: $ARCHIVE ($SIZE_MB MB)"

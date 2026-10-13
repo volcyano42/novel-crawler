@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
-from backend.routers import storage, download, export, engine, config, history
+from backend.routers import storage, download, export, config, history
 from backend.services.engine_manager import clear_engine_cache
 
 
@@ -80,7 +80,6 @@ app.add_middleware(
 app.include_router(storage.router)
 app.include_router(download.router)
 app.include_router(export.router)
-app.include_router(engine.router)
 app.include_router(config.router)
 app.include_router(history.router)
 
@@ -89,9 +88,9 @@ async def health():
     return {"ok": True, "message": "success", "data": {"status": "ok"}}
 
 # ── 前端静态文件 ──
-def _find_frontend_dist() -> Path | None:
-    """定位前端构建产物目录。"""
-    candidates = []
+def _frontend_candidates() -> list[Path]:
+    """前端构建产物目录候选（按优先级）。"""
+    candidates: list[Path] = []
     # Nuitka：不设 sys.frozen/_MEIPASS；onefile 数据文件解压到 __file__ 所在目录（对齐 init_config._get_root，sys.executable 指向 bootstrap exe 不可用）
     if "__compiled__" in globals():
         candidates.append(Path(__file__).resolve().parent / "frontend" / "dist")
@@ -102,7 +101,12 @@ def _find_frontend_dist() -> Path | None:
         _project_root / "frontend" / "dist",
         Path.cwd() / "frontend" / "dist",
     ])
-    for p in candidates:
+    return candidates
+
+
+def _find_frontend_dist() -> Path | None:
+    """定位前端构建产物目录：返回第一个含 index.html 的候选，都没有则 None。"""
+    for p in _frontend_candidates():
         if (p / "index.html").exists():
             return p
     return None
@@ -125,10 +129,10 @@ async def serve_frontend(full_path: str):
         return JSONResponse({"ok": False, "message": "前端未构建，仅 API 可用"}, status_code=404)
     return HTMLResponse("""<!DOCTYPE html>
 <html lang="zh-CN">
-<head><meta charset="UTF-8"><title>novel-crawler</title>
+<head><meta charset="UTF-8"><title>novel-downloader</title>
 <style>body{font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f8fafc;color:#334155}main{text-align:center;max-width:420px;padding:2rem}h1{font-size:1.5rem;margin-bottom:.5rem}p{color:#64748b;line-height:1.6}code{background:#e2e8f0;padding:.15em .4em;border-radius:4px;font-size:.9em}</style>
 </head><body><main>
-<h1>📖 novel-crawler</h1>
+<h1>📖 novel-downloader</h1>
 <p>API 服务已启动（<code>localhost:8000</code>）</p>
 <p>前端尚未构建。运行以下命令后刷新页面：</p>
 <code>cd frontend &amp;&amp; npm run build</code>

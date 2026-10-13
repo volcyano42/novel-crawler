@@ -88,6 +88,7 @@ function AppShell() {
             <Route path="/bookshelf" element={<BookshelfPage />} />
             <Route path="/downloads" element={<BookshelfPage />} />
             <Route path="/settings" element={<BookshelfPage />} />
+            <Route path="/sources" element={<Navigate to="/settings" replace />} />
             <Route path="/search-tab" element={<BookshelfPage />} />
             <Route path="/novel/:novelId" element={<DetailPage />} />
             <Route path="/novel/:novelId/:chapterId" element={<ReaderPage />} />

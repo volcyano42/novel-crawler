@@ -2,16 +2,22 @@
 """非交互命令行入口。
 
 用法:
-    python cli.py search --platform fanqie "关键词"
-    python cli.py download --mode requests --url "https://..."
-    python cli.py update --platform fanqie --group default
+    python cli.py search "关键词"                          # 并发全部书源
+    python cli.py search --source fanqie-requests-default "关键词"
+    python cli.py download --source fanqie-requests-default --url "https://..."
+    python cli.py update
     python cli.py export --group default --format epub
-    python cli.py info --url "https://fanqienovel.com/page/7123456789012345678"
+    python cli.py delete --id <novel_id>
+    python cli.py novel list [--group <g>]
+    python cli.py sources list [--json]
+    python cli.py info --source fanqie-requests-default --url "https://..."
+    python cli.py dev new-source --name <name> | dev list-sources
+    python cli.py config init [--all | --main | --sites NAME | --formats FMT | --user-db]
 """
 
 import argparse
 import asyncio
-import re
+import json
 import sys
 from pathlib import Path
 
@@ -20,29 +26,12 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 # ── 复用 app.config 的配置加载 ─────────────────────────────────
-from cli.config import (
-    load_main_config, load_site_config, load_format_configs, build_options, )
-from novelbase import create_engine, resolve_meta
+from cli.config import load_main_config, load_format_configs
+from novelbase import resolve_meta
+from shared.config import effective_capabilities
 from novelbase.utils.logger import get_logger
 
 _log = get_logger("novelbase.cli")
-
-
-def _platform_from_url(url: str) -> str:
-    """从 URL 推断平台（数据驱动）。"""
-    from novelbase.source import platform_from_url
-    plat = platform_from_url(url)
-    if plat:
-        return plat
-    raise ValueError(f"未识别书源 URL: {url}")
-
-
-def _resolve_platform(args) -> str:
-    """解析平台：优先用 --platform，否则从 URL 推断。"""
-    if getattr(args, "platform", None):
-        return args.platform
-    url = getattr(args, "url", "")
-    return _platform_from_url(url) if url else "fanqie"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -55,30 +44,23 @@ def _parse_args() -> argparse.Namespace:
     # ── search ──
     sp = sub.add_parser("search", help="搜索小说")
     sp.add_argument("query", help="搜索关键词")
-    sp.add_argument("--platform", "-p", default="fanqie", help="平台 (fanqie)")
-    sp.add_argument("--mode", "-m", default="requests", help="模式 (requests/browser/api)")
-    sp.add_argument("--variant", default=None,
-                    help="variant 名（browser/requests 未指定默认 default；某模式多于一个 variant 时须显式指定）")
+    sp.add_argument("--source", "-s", default="",
+                    help="书源名 source_name；省略 = 并发全部书源")
     sp.add_argument("--page", type=int, default=1, help="页码")
 
     # ── download ──
     dp = sub.add_parser("download", help="下载小说")
-    dp.add_argument("--platform", "-p", default=None, help="平台（可从 URL 自动推断）")
-    dp.add_argument("--mode", "-m", default="requests", help="模式")
-    dp.add_argument("--variant", default=None,
-                    help="variant 名（browser/requests 未指定默认 default；某模式多于一个 variant 时须显式指定）")
+    dp.add_argument("--source", "-s", required=True, help="书源名 source_name")
     dp.add_argument("--url", "-u", required=True, help="小说页面 URL")
     dp.add_argument("--group", "-g", default="default", help="分组名")
-    dp.add_argument("--workers", "-w", type=int, default=3, help="下载线程数")
+    dp.add_argument("--workers", "-w", type=int, default=3,
+                    help="并行章节数（受书源并发额度约束）")
 
     # ── update ──
     up = sub.add_parser("update", help="更新已下载小说")
-    up.add_argument("--platform", "-p", default="fanqie", help="平台")
-    up.add_argument("--mode", "-m", default="requests", help="模式")
-    up.add_argument("--variant", default=None,
-                    help="variant 名（browser/requests 未指定默认 default；某模式多于一个 variant 时须显式指定）")
     up.add_argument("--group", "-g", default="default", help="分组名")
-    up.add_argument("--workers", "-w", type=int, default=3, help="下载线程数")
+    up.add_argument("--workers", "-w", type=int, default=3,
+                    help="并行章节数（受书源并发额度约束）")
 
     # ── export ──
     ep = sub.add_parser("export", help="重新导出已下载小说")
@@ -87,7 +69,7 @@ def _parse_args() -> argparse.Namespace:
 
     # ── delete ──
     dp2 = sub.add_parser("delete", help="删除已下载小说")
-    dp2.add_argument("--id", required=True, help="小说 ID（如 fanqie_7123456789012345678）")
+    dp2.add_argument("--id", required=True, help="小说 ID（sha256(url)[:32]；可用 `novel list` 查看）")
 
     # ── novel ──
     np = sub.add_parser("novel", help="已下载小说管理")
@@ -103,59 +85,43 @@ def _parse_args() -> argparse.Namespace:
 
     # ── info ──
     ip = sub.add_parser("info", help="查看小说信息")
+    ip.add_argument("--source", "-s", required=True, help="书源名 source_name")
     ip.add_argument("--url", "-u", required=True, help="小说页面 URL")
-    ip.add_argument("--platform", "-p", default=None, help="平台（可从 URL 自动推断）")
-    ip.add_argument("--mode", "-m", default="requests", help="模式")
-    ip.add_argument("--variant", default=None,
-                    help="variant 名（browser/requests 未指定默认 default；某模式多于一个 variant 时须显式指定）")
+
+    # ── config ──
+    cf = sub.add_parser("config", help="配置管理")
+    cf_sub = cf.add_subparsers(dest="config_command", required=True)
+    cf_init = cf_sub.add_parser("init", help="初始化缺失的配置文件（不覆盖已有）")
+    cf_init.add_argument("--all", action="store_true", help="初始化全部（默认）")
+    cf_init.add_argument("--main", action="store_true", help="只初始化 config.yaml")
+    cf_init.add_argument("--sites", default=None, metavar="NAME",
+                         help="只初始化 sites/NAME.yaml；NAME=all 表示全部")
+    cf_init.add_argument("--formats", default=None, metavar="FMT",
+                         help="只初始化 formats/FMT.yaml；FMT=all 表示全部")
+    cf_init.add_argument("--user-db", action="store_true", help="只初始化 user_data.db")
 
     # ── dev ──
     dv = sub.add_parser("dev", help="开发工具")
-    dv_sub = dv.add_subparsers(dest="dev_command")
+    dv_sub = dv.add_subparsers(dest="dev_command", required=True)
 
     ns = dv_sub.add_parser("new-source", help="创建新书源脚手架")
-    ns.add_argument("--name", required=True, help="书源名称")
-    ns.add_argument("--modes", default="requests", help="模式列表，逗号分隔 (requests,browser,api)")
-
-    nv = dv_sub.add_parser("new-variant", help="为书源新建变体脚手架")
-    nv.add_argument("--source", required=True, help="书源名称")
-    nv.add_argument("--mode", required=True, help="模式 (api/browser/requests)")
-    nv.add_argument("--variant", required=True, help="新变体名称")
+    ns.add_argument("--name", required=True, help="书源名 source_name（如 demo-requests-default）")
+    ns.add_argument("--modes", default="requests", help="模式，逗号分隔 (requests,browser,api)")
+    ns.add_argument("--no-config", action="store_true",
+                    help="不生成默认用户配置 app_data/config/sites/{source_name}.yaml")
 
     ls = dv_sub.add_parser("list-sources", help="列出所有可用书源")
-    ls.add_argument("--json", action="store_true", help="仅列出 JSON 规则源")
+    ls.add_argument("--json", action="store_true", help="以 JSON 输出")
 
     return p.parse_args()
 
 
-def _resolve_variant(platform: str, mode: str, variant: str | None) -> str | None:
-    """解析 variant：≤1 个时直接用唯一项；多于一个且未指定时提示 --variant 并列出所有名称。"""
-    from cli.config import mode_variants, resolve_variant as _resolve
-    site_cfg = load_site_config(platform)
-    resolved = _resolve(site_cfg, mode, variant)
-    if resolved is not None:
-        return resolved
-    variants = mode_variants(site_cfg, mode)
-    if len(variants) > 1:
-        print(f"平台 {platform} 的 {mode} 模式有 {len(variants)} 个 variant，请用 --variant 显式指定：")
-        for i, v in enumerate(variants, 1):
-            print(f"  {i}. {v}")
-        sys.exit(2)
-    return None
-
-
-def _get_engine(platform: str, mode: str, variant: str | None = None):
-    """根据平台、引擎模式和 variant 创建 engine。"""
-    cfg = load_main_config()
-    cfg["mode"] = mode
-    site_cfg = load_site_config(platform)
-    options = build_options(cfg, site_cfg, variant)
-
-    # 注册导出格式 — 单格式模式
+def _apply_export_options(options) -> dict:
+    """把当前生效的导出格式配置装配到 Options（单格式模式），返回 format_configs 供复用。"""
     format_configs = load_format_configs()
     from novelbase.exporter import register_export_options
     _opt_cls_map = register_export_options()
-    group = cfg.get("group", "default")
+    group = load_main_config().get("group", "default")
     active_format = next(iter(format_configs), None)  # 取第一个配置的格式
     fmt_cfg = format_configs.get(active_format, {}) if active_format else {}
     opt_cls = _opt_cls_map.get(active_format) if active_format else None
@@ -166,54 +132,76 @@ def _get_engine(platform: str, mode: str, variant: str | None = None):
         ) if k in fmt_cfg}
         opt = opt_cls(output_path=raw_path, **extra)
         options.set_export(opt)
-
-    return create_engine(options), format_configs
+    return format_configs
 
 
 def cmd_search(args):
-    engine, format_configs = _get_engine(
-        args.platform, args.mode,
-        _resolve_variant(args.platform, args.mode, args.variant),
-    )
-    try:
-        from novelbase.core.downloader import search
-        results = asyncio.run(search(args.platform, args.query, engine, page=args.page))
-        if not results:
-            print("未找到任何结果")
-            return
-        print(f"\n找到 {len(results)} 个结果：\n")
-        for i, r in enumerate(results, 1):
-            desc = (r.description or "")[:80]
-            print(f"  {i:2d}. {r.title}")
-            print(f"      作者: {r.author}")
-            print(f"      URL:  {r.url}")
-            if desc:
-                print(f"      简介: {desc}")
-            print()
-    finally:
-        engine.close()
+    from novelbase.core.downloader import search
+    from cli.core import _make_engines
+    from shared.config import default_source_names, display_name
+
+    sources = [args.source] if args.source else default_source_names()
+    if not sources:
+        print("没有可用的书源")
+        return
+
+    async def _search_one(name: str):
+        # 每个源各用自己的引擎（杜绝「同 mode 源共用首个源引擎」）。
+        engines = _make_engines(name)
+        try:
+            return await search(name, args.query, engines, page=args.page,
+                                mode_overrides=effective_capabilities(name))
+        except Exception as e:      # 某源失败不影响其它源
+            print(f"  [{name}] 搜索失败: {e}")
+            return None
+        finally:
+            for eng in engines.cache.values():
+                try:
+                    eng.close()
+                except Exception:
+                    pass
+
+    async def _run():
+        groups = await asyncio.gather(*(_search_one(n) for n in sources))
+        return [r for r in groups if r is not None]
+
+    results = asyncio.run(_run())
+    if not results:
+        print("未找到任何结果")
+        return
+    print(f"\n找到 {len(results)} 个结果：\n")
+    for i, r in enumerate(results, 1):
+        desc = (r.description or "")[:80]
+        print(f"  {i:2d}. {r.title}")
+        print(f"      作者: {r.author}")
+        print(f"      书源: {display_name(getattr(r, 'source_name', ''))}")
+        print(f"      URL:  {r.url}")
+        if desc:
+            print(f"      简介: {desc}")
+        print()
 
 
 def cmd_download(args):
-    platform = _resolve_platform(args)
-    engine, format_configs = _get_engine(
-        platform, args.mode,
-        _resolve_variant(platform, args.mode, args.variant),
-    )
+    source_name = args.source
+    from cli.core import _do_download_inner, _make_engines
+
+    format_configs = load_format_configs()
+    engines = _make_engines(source_name, options_hook=_apply_export_options)
     try:
-        from cli.core import _do_download_inner
-        asyncio.run(_do_download_inner(engine, args.url, args.group, format_configs,
-                                       max_workers=args.workers))
+        asyncio.run(_do_download_inner(source_name, args.url, args.group, format_configs,
+                                       max_workers=args.workers, engines=engines))
     finally:
-        engine.close()
+        for eng in engines.cache.values():
+            try:
+                eng.close()
+            except Exception:
+                pass
 
 
 def cmd_update(args):
-    variant = _resolve_variant(args.platform, args.mode, args.variant)
     format_configs = load_format_configs()
     from cli.core import do_update
-    asyncio.run(do_update(format_configs, max_workers=args.workers,
-                          mode=args.mode, variant=variant))
+    asyncio.run(do_update(format_configs, max_workers=args.workers))
 
 
 def cmd_export(args):
@@ -256,14 +244,14 @@ def cmd_export(args):
 
 
 def cmd_info(args):
-    platform = _resolve_platform(args)
-    engine, _ = _get_engine(
-        platform, args.mode,
-        _resolve_variant(platform, args.mode, args.variant),
-    )
+    source_name = args.source
+    from cli.core import _make_engines
+
+    engines = _make_engines(source_name, options_hook=_apply_export_options)
     try:
         print(f"正在获取: {args.url}")
-        novel = asyncio.run(resolve_meta(args.url, engine))
+        novel = asyncio.run(resolve_meta(args.url, source_name, engines,
+                                         mode_overrides=effective_capabilities(source_name)))
         print(f"\n  书名：{novel.title}")
         print(f"  作者：{novel.author}")
         print(f"  URL： {novel.url}")
@@ -276,7 +264,11 @@ def cmd_info(args):
         if novel.cover and novel.cover.image_format:
             print(f"  封面：{novel.cover.image_format} ({len(novel.cover.raw_data)} bytes)")
     finally:
-        engine.close()
+        for eng in engines.cache.values():
+            try:
+                eng.close()
+            except Exception:
+                pass
 
 
 def cmd_delete(args):
@@ -292,6 +284,9 @@ def cmd_delete(args):
         sys.exit(1)
 
     storage.delete_novel(novel_id)
+
+    from shared.user_data import delete_novel_source
+    delete_novel_source(novel_id)
 
     groups = load_groups()
     removed = False
@@ -333,31 +328,95 @@ def cmd_novel(args):
 
 
 def cmd_source(args):
-    """书源管理。"""
-    from novelbase.source import register_source
+    """书源管理（mode 显示有效值；显示别名与分组）。"""
+    from novelbase.source import list_sources
+    from shared.config import display_name, source_alias, source_group
 
     if args.source_command != "list":
         return
 
-    sources = register_source()
+    names = list_sources()
     if args.json:
         import json
         payload = {
             name: {
-                "name": meta.get("name"),
-                "show_name": meta.get("show_name", name),
-                "hosts": list(meta.get("hosts", ())),
+                "source_name": name,
+                "source_alias": source_alias(name),
+                "source_group": source_group(name),
+                "capabilities": effective_capabilities(name),
             }
-            for name, meta in sources.items()
+            for name in names
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
 
-    print(f"可用书源 ({len(sources)}):")
-    for name, meta in sources.items():
-        show = meta.get("show_name", name)
-        hosts = ", ".join(meta.get("hosts", ()))
-        print(f"  - {name} ({show})   hosts: {hosts}")
+    print(f"可用书源 ({len(names)}):")
+    for name in names:
+        caps = effective_capabilities(name)
+        cap_str = ", ".join(f"{c}:{m}" for c, m in caps.items()) or "无"
+        print(f"  - {display_name(name)}  [{source_group(name) or '未分组'}]  ({name})  capabilities: {cap_str}")
+
+
+def cmd_config(args):
+    """配置管理（一期只提供 `config init`）：**只补缺失，绝不覆盖已有配置**。
+
+    实现要点：`init_config.init_main_config()` / `init_site_config(name)` /
+    `init_export_config(fmt)` 内部是**无条件** `shutil.copy2`（模块注释也写明
+    「初始化（不检查，直接复制）」），因此**不能**整体调用 —— 先由
+    `check_config()` 取缺失清单，再按项（且只传单个名字）调用，只可能写入确实
+    不存在的文件。`user_data.db` 的 `init_user_db()` 自带「不存在才复制」判断。
+
+    `--main` / `--sites` / `--formats` / `--user-db` 互斥；无参等价 `--all`。
+    """
+    if args.config_command != "init":
+        return
+    import init_config
+
+    exclusive = [args.main, args.sites is not None,
+                 args.formats is not None, args.user_db]
+    if sum(exclusive) > 1:
+        print("错误：--main / --sites / --formats / --user-db 只能选一个（不加参数则等价 --all）",
+              file=sys.stderr)
+        raise SystemExit(2)
+
+    missing = init_config.check_config()["missing"]  # ['config.yaml', 'sites/x.yaml', ...]
+    created: list[str] = []
+
+    for item in missing:
+        kind, _, fname = item.partition("/")
+        if not fname:  # 顶层文件（config.yaml）
+            kind, stem = "main", ""
+        else:
+            stem = fname[:-5] if fname.endswith(".yaml") else fname
+        if args.main and kind != "main":
+            continue
+        if args.sites is not None and kind != "sites":
+            continue
+        if args.formats is not None and kind != "formats":
+            continue
+        if args.user_db:
+            continue  # user_data.db 不在 yaml 缺失清单中，单独处理
+        if kind == "sites" and args.sites not in (None, "all") and stem != args.sites:
+            continue
+        if kind == "formats" and args.formats not in (None, "all") and stem != args.formats:
+            continue
+        if kind == "main":
+            created += init_config.init_main_config()
+        elif kind == "sites":
+            created += init_config.init_site_config(stem)
+        elif kind == "formats":
+            created += init_config.init_export_config(stem)
+
+    # user_data.db：单独指定时只做它；未限定类别（无参 / --all）时顺带补齐
+    if args.user_db or (not args.main and args.sites is None and args.formats is None):
+        created += init_config.init_user_db()
+
+    if created:
+        print(f"已初始化 {len(created)} 个配置项：")
+        for path in created:
+            print(f"  - {path}")
+    else:
+        print("配置已完整，无需初始化（已有的配置不会被改动）。")
 
 
 def cmd_dev(args):
@@ -375,10 +434,8 @@ def cmd_dev(args):
             print(f"  - {s}")
 
     elif args.dev_command == "new-source":
-        _scaffold_source(args.name, args.modes.split(","))
-
-    elif args.dev_command == "new-variant":
-        _scaffold_variant(args.source, args.mode, args.variant)
+        _scaffold_source(args.name, args.modes.split(","),
+                         write_config=not args.no_config)
 
 
 _SOURCES_ROOT = Path(__file__).parent.parent / "novelbase" / "sources"
@@ -388,102 +445,51 @@ _SOURCES_ROOT = Path(__file__).parent.parent / "novelbase" / "sources"
 _SCAFFOLD_FUNCTIONS = ("search", "novel_info", "chapter_list", "chapter_content")
 
 _FUNC_TEMPLATE = (
-    '"""TODO: implement {fn} for {source}/{variant}."""\n'
+    '"""TODO: implement {fn} for {source_name}."""\n'
     'from novelbase.core.exceptions import FeatureNotSupportedError\n\n'
     'async def {fn}(*args, **kwargs):\n'
     '    raise FeatureNotSupportedError("TODO")\n'
 )
 
 
-def _scaffold_source(name: str, modes: list[str]):
-    """生成新书源脚手架。"""
-    source_dir = _SOURCES_ROOT / name
+def _scaffold_source(name: str, modes: list[str], write_config: bool = True):
+    """生成新书源脚手架（扁平一层结构）。
+
+    - 目录名 = `name` 的下划线形式；`source.json.source_name` 用原名（连字符）。
+    - 生成空 `__init__.py` + `source.json` + 4 个能力文件（`search` /
+      `novel_info` / `chapter_list` / `chapter_content`）。
+    - `write_config=True` 时额外生成默认用户配置 `sites/{name}.yaml`。
+    """
+    mode = (modes[0].strip() if modes else "") or "requests"
+    source_dir = _SOURCES_ROOT / name.replace("-", "_")
     source_dir.mkdir(parents=True, exist_ok=True)
 
-    (source_dir / "__init__.py").write_text(
-        f'NAME = "{name}"\nBASE_URLS = ["example.com"]\n', encoding="utf-8")
-    (source_dir / "_common.py").write_text(
-        '"""共享解析函数。"""\n', encoding="utf-8")
+    (source_dir / "__init__.py").write_text("", encoding="utf-8")
 
-    for mode in modes:
-        mode = mode.strip()
-        mode_dir = source_dir / mode
-        mode_dir.mkdir(exist_ok=True)
-        (mode_dir / "__init__.py").touch()
+    from shared.config import mode_defaults
+    manifest = {
+        "source_name": name,
+        "common": {"mode": mode, **mode_defaults(mode)},
+        "default_config": {fn: {} for fn in _SCAFFOLD_FUNCTIONS},
+    }
+    (source_dir / "source.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-        for fn in _SCAFFOLD_FUNCTIONS:
-            (mode_dir / f"{fn}.py").write_text(
-                _FUNC_TEMPLATE.format(fn=fn, source=name, variant=mode),
-                encoding="utf-8")
-
-    print(f"书源脚手架已创建: novelbase/sources/{name}/")
-    for mode in modes:
-        print(f"  {mode}/  search.py, novel_info.py, chapter_list.py, chapter_content.py")
-
-
-def _scaffold_variant(source: str, mode: str, variant: str):
-    """为已有书源新建变体脚手架：代码目录 + 站点配置块。
-
-    校验链任一失败即报错退出（不产生任何文件）：
-    variant 名非法 → 书源代码目录/站点配置缺失 → mode 不在配置 → variant 已存在 → 无模板 variant。
-    """
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", variant):
-        print(f"variant '{variant}' 含非法字符，仅允许字母/数字/下划线/连字符",
-              file=sys.stderr)
-        sys.exit(1)
-
-    from cli.config import CONFIG_DIR, load_site_config, save_site_config
-
-    source_dir = _SOURCES_ROOT / source
-    if not source_dir.is_dir():
-        print(f"书源 {source} 不存在，请先运行 dev new-source --name {source}",
-              file=sys.stderr)
-        sys.exit(1)
-
-    site_path = CONFIG_DIR / "sites" / f"{source}.yaml"
-    if not site_path.exists():
-        print(f"书源 {source} 不存在，请先运行 dev new-source --name {source}",
-              file=sys.stderr)
-        sys.exit(1)
-
-    site_cfg = load_site_config(source)
-    if mode not in site_cfg:
-        avail = ", ".join(str(k) for k in site_cfg) or "无"
-        print(f"mode '{mode}' 不在站点配置 {source} 中，可用 mode: {avail}",
-              file=sys.stderr)
-        sys.exit(1)
-
-    variant_dir = source_dir / mode / variant
-    cfg_variant_exists = (
-        isinstance(site_cfg.get(mode), dict) and variant in site_cfg[mode])
-    if variant_dir.exists() or cfg_variant_exists:
-        print(f"variant '{variant}' 已存在（代码或配置）", file=sys.stderr)
-        sys.exit(1)
-
-    mode_section = site_cfg.get(mode)
-    template_key = None
-    if isinstance(mode_section, dict):
-        template_key = next(
-            (k for k, v in mode_section.items() if isinstance(v, dict)), None)
-    if template_key is None:
-        print(f"mode '{mode}' 下没有可复制的 variant，请先手动添加一个",
-              file=sys.stderr)
-        sys.exit(1)
-
-    variant_dir.mkdir(parents=True, exist_ok=True)
-    (variant_dir / "__init__.py").touch()
     for fn in _SCAFFOLD_FUNCTIONS:
-        (variant_dir / f"{fn}.py").write_text(
-            _FUNC_TEMPLATE.format(fn=fn, source=source, variant=variant),
-            encoding="utf-8")
+        (source_dir / f"{fn}.py").write_text(
+            _FUNC_TEMPLATE.format(fn=fn, source_name=name), encoding="utf-8")
 
-    from copy import deepcopy
-    site_cfg[mode][variant] = deepcopy(site_cfg[mode][template_key])
-    save_site_config(source, site_cfg)
+    if write_config:
+        from shared.config import save_site_config
+        save_site_config(name, {fn: {} for fn in _SCAFFOLD_FUNCTIONS})
 
-    print(f"书源变体已创建: novelbase/sources/{source}/{mode}/{variant}/")
-    print("  search.py, novel_info.py, chapter_list.py, chapter_content.py")
-    print(f"站点配置已更新: app_data/config/sites/{source}.yaml → {mode}.{variant}")
+    print(f"书源脚手架已创建: novelbase/sources/{source_dir.name}/")
+    print("  __init__.py, source.json, "
+          + ", ".join(f"{fn}.py" for fn in _SCAFFOLD_FUNCTIONS))
+    if write_config:
+        print(f"用户配置已创建: app_data/config/sites/{name}.yaml")
+
+
 
 
 def main():
@@ -497,6 +503,7 @@ def main():
         "novel":    cmd_novel,
         "sources":  cmd_source,
         "info":     cmd_info,
+        "config":   cmd_config,
         "dev":      cmd_dev,
     }
     dispatch[args.command](args)

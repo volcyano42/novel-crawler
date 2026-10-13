@@ -1,1 +1,1 @@
-"""novel-crawler CLI 应用包。"""
+"""novel-downloader CLI 应用包。"""

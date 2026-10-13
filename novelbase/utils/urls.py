@@ -1,21 +1,17 @@
-"""URL 规范化与 Novel.id 生成工具（Novel.id = sha256(canonical_url)[:32]）。"""
+"""Novel 的物理文件名 / 对外标识：sha256(url) 前 32 位。
+
+- 书源返回的 url **原样**存入库内 `meta.id`（可读、可按 url 查书）
+- 磁盘文件名与对外标识（API / 前端 / CLI 用的 id）用 `sha256(url)[:32]`：
+  url 含 "/" ":" 等字符，直接作文件名在 Windows 上非法，作 URL 路径段会被截断
+  （实测：Starlette 路由参数接不住，而且 `%2F` 也会被 ASGI 解码回 "/"）
+"""
 
 import hashlib
-from urllib.parse import urlsplit, urlunsplit
 
 
-def canonical_book_url(url: str, platform: str) -> str:
-    """书源完整 URL 规范化：小写 scheme/host、去 query/fragment、去尾斜杠。"""
-    parts = urlsplit(url.strip())
-    scheme = parts.scheme.lower()
-    netloc = parts.netloc.lower()
-    path = parts.path
-    if path not in ("", "/"):
-        path = path.rstrip("/")
-    result = urlunsplit((scheme, netloc, path, "", ""))
-    return result
+def make_novel_id(url: str) -> str:
+    """由书源返回的原始 url 生成 32 位 hex 标识（sha256 前 32 字符）。
 
-
-def make_novel_id(canonical_url: str) -> str:
-    """由 canonical url 生成 32 位 hex 的 Novel.id（sha256 前 32 字符）。"""
-    return hashlib.sha256(canonical_url.encode("utf-8")).hexdigest()[:32]
+    幂等：同 url 结果相同；不同 url 结果不同。
+    """
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]

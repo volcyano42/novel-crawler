@@ -1,18 +1,20 @@
 import {useState} from "react";
-import {AlertTriangle, CheckCircle, ChevronDown, Loader2, Pause, Play, RefreshCw, X, XCircle} from "lucide-react";
+import {AlertTriangle, CheckCircle, ChevronDown, Clock, Loader2, Pause, Play, RefreshCw, X, XCircle} from "lucide-react";
 import {cn} from "@/lib/utils";
 import {Tooltip, TooltipContent, TooltipProvider, TooltipTrigger} from "@/components/ui/tooltip";
 import type {ChapterStatus} from "@/api/endpoints";
 
-type TaskStatus = "downloading" | "paused" | "completed" | "failed" | "partial" | "cancelled";
+type TaskStatus = "queued" | "downloading" | "paused" | "completed" | "failed" | "partial" | "cancelled";
 
 interface DownloadTaskProps {
   title: string; status: TaskStatus; progress?: number; errorMessage?: string; currentTitle?: string;
   chapters?: ChapterStatus[];
+  sourceName?: string; createdAt?: number;
   onPause?: () => void; onResume?: () => void; onCancel?: () => void; onRetry?: () => void; className?: string;
 }
 
 const statusConfig: Record<TaskStatus, { label: string; className: string; icon: typeof CheckCircle }> = {
+  queued:     { label: "排队中", className: "bg-slate-100 text-slate-500", icon: Clock },
   downloading: { label: "下载中",  className: "bg-[#5e6ad2]/10 text-[#5e6ad2]", icon: Loader2 },
   paused:     { label: "已暂停", className: "bg-amber-50 text-amber-600", icon: Pause },
   completed:  { label: "完成",   className: "bg-emerald-50 text-emerald-600", icon: CheckCircle },
@@ -74,7 +76,7 @@ export function DownloadTaskSkeleton() {
   );
 }
 
-export function DownloadTask({ title, status, progress = 0, errorMessage, currentTitle, chapters = [], onPause, onResume, onCancel, onRetry, className }: DownloadTaskProps) {
+export function DownloadTask({ title, status, progress = 0, errorMessage, currentTitle, chapters = [], sourceName, createdAt, onPause, onResume, onCancel, onRetry, className }: DownloadTaskProps) {
   const cfg = statusConfig[status]; const Icon = cfg.icon;
   const showProgress = status === "downloading" || status === "paused";
   const [expanded, setExpanded] = useState(false);
@@ -108,6 +110,14 @@ export function DownloadTask({ title, status, progress = 0, errorMessage, curren
           {currentTitle && status === "downloading" && (
             <span className="truncate block text-[11px] text-slate-400 mt-0.5">{currentTitle}</span>
           )}
+          {status === "queued" && (
+            <span className="truncate block text-[11px] text-slate-400 mt-0.5">等待前一个任务完成…</span>
+          )}
+          {(sourceName || createdAt) ? (
+            <span className="truncate block text-[11px] text-slate-400 mt-0.5">
+              {[sourceName, createdAt ? new Date(createdAt * 1000).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : null].filter(Boolean).join(" · ")}
+            </span>
+          ) : null}
           {showProgress && (
             <div className="mt-1.5 flex items-center gap-2">
               <div className="flex-1 max-w-[120px]"><div className="relative h-1.5 overflow-hidden rounded-lg bg-slate-200">
@@ -126,7 +136,7 @@ export function DownloadTask({ title, status, progress = 0, errorMessage, curren
             <button onClick={e => { e.stopPropagation(); onPause(); }} className="rounded-lg p-1 text-slate-400 hover:text-amber-500 transition-colors"><Pause className="h-4 w-4" strokeWidth={1.5} /></button>}
           {status === "paused" && onResume &&
             <button onClick={e => { e.stopPropagation(); onResume(); }} className="rounded-lg p-1 text-slate-400 hover:text-[#5e6ad2] transition-colors"><Play className="h-4 w-4" strokeWidth={1.5} /></button>}
-          {(status === "downloading" || status === "paused") && onCancel &&
+          {(status === "downloading" || status === "paused" || status === "queued") && onCancel &&
             <button onClick={e => { e.stopPropagation(); onCancel(); }} className="rounded-lg p-1 text-slate-400 hover:text-red-500 transition-colors"><X className="h-4 w-4" strokeWidth={1.5} /></button>}
           {status === "failed" && onRetry && (
             <TooltipProvider><Tooltip><TooltipTrigger asChild>

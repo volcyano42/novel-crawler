@@ -1,13 +1,12 @@
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence, Literal
-
+from typing import Literal
 
 
 @dataclass
 class APIOptions:
-    name: str | None = None
-    delay: tuple[float, ...] = field(default_factory=lambda: (3.0, 5.0))
+    delay: tuple[float, ...] = field(default_factory=lambda: (0.0, 0.0))
     timeout: float = 30
     retry_times: int = 3
     backoff_factor: float = 2
@@ -17,7 +16,7 @@ class APIOptions:
 @dataclass
 class RequestsOptions:
     headers: dict = field(default_factory=lambda: {"User-Agent": "Mozilla/5.0 ..."})
-    delay: tuple[float, ...] = field(default_factory=lambda: (3.0, 5.0))
+    delay: tuple[float, ...] = field(default_factory=lambda: (0.0, 0.0))
     timeout: float = 30
     retry_times: int = 3
     backoff_factor: float = 2
@@ -27,7 +26,7 @@ class RequestsOptions:
 @dataclass
 class BrowserOptions:
     browser_type: str = "chromium"
-    delay: tuple[float, ...] = field(default_factory=lambda: (3.0, 5.0))
+    delay: tuple[float, ...] = field(default_factory=lambda: (0.0, 0.0))
     timeout: float = 30
     retry_times: int = 3
     backoff_factor: float = 2
@@ -48,7 +47,7 @@ class ExportOptions:
     format: str = ""
     output_path: Path | str = ""
     enabled: bool = True
-    file_name_template: str = "{name}"
+    file_name_template: str = "{title}"
 
 @dataclass
 class Options:
@@ -64,21 +63,20 @@ class Options:
             return self
 
         def set_api_options(self,
-                            name: str,
-                            delay: Sequence[float] = (3, 5),
+                            delay: Sequence[float] = (0, 0),
                             timeout: float = 30,
                             retry_times: int = 3,
                             backoff_factor: float = 2,
                             key: str | None = None,
                             params: dict[str, str] | None = None) -> "Options":
-            self._api = APIOptions(name=name, delay=tuple(delay), timeout=timeout,
+            self._api = APIOptions(delay=tuple(delay), timeout=timeout,
                                    retry_times=retry_times,
                                    backoff_factor=backoff_factor, key=key, params=params)
             return self
 
         def set_requests_options(self,
                                   headers: dict | None = None,
-                                  delay: Sequence[float] = (3, 5),
+                                  delay: Sequence[float] = (0, 0),
                                   timeout: float = 30,
                                   retry_times: int = 3,
                                   backoff_factor: float = 2,
@@ -93,7 +91,7 @@ class Options:
 
         def set_browser_options(self,
                                 browser_type: str = "chromium",
-                                delay: Sequence[float] = (3, 5),
+                                delay: Sequence[float] = (0, 0),
                                 timeout: float = 30,
                                 retry_times: int = 3,
                                 backoff_factor: float = 2,

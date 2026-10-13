@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Nuitka onefile: novel-crawler-web-{version}-{platform}
+# Build Nuitka onefile: novel-downloader-web-{version}-{platform}
 # Linux x64/arm64（Termux 用 portable 见 build-portable.sh；Windows 用 build-nuitka.ps1）
 # Usage: ./build-nuitka.sh [-v <version>] [-r <retries>]
 # Requires: Python 3.10+, npm, gcc/clang, patchelf（Debian/Ubuntu: apt install patchelf；GitHub Actions runner 已预装）
@@ -45,12 +45,12 @@ fi
 
 # ── 版本号 ──
 if [ -z "$VERSION" ]; then
-    VERSION=$("$PYTHON" -c "import re;print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('novelbase/__init__.py', encoding='utf-8').read()).group(1))")
+    VERSION=$("$PYTHON" -c "import re;print(re.search(r'version = \"([^\"]+)\"', open('pyproject.toml', encoding='utf-8').read()).group(1))")
 fi
 echo "=== Nuitka build v$VERSION ($(date +%H:%M:%S)) ==="
 
 DIST_DIR="dist"
-EXE_NAME="novel-crawler-web-$VERSION-$PLATFORM"
+EXE_NAME="novel-downloader-web-$VERSION-$PLATFORM"
 EXE_PATH="$DIST_DIR/$EXE_NAME"
 
 # ── 0. 项目依赖（manifest/编译需要）──

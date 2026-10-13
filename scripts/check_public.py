@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""check_public.py — novel-crawler-public 迁移校验（三道防线）。
+"""check_public.py — novel-downloader-public 迁移校验（三道防线）。
 
-在 Agent 把文件从 private 仓库复制到 novel-crawler-public 之后、提交之前运行：
+在 Agent 把文件从 private 仓库复制到 novel-downloader-public 之后、提交之前运行：
 
 1. 缺失检查：白名单（PUBLIC_MANIFEST.md）内文件在 public 缺失 → 报错
 2. 多余检查：public 里有清单外文件（敏感/杂项误迁）→ 报错（关键防线）
@@ -10,7 +10,7 @@
 任一防线失败以非零退出码结束，阻止提交。
 
 非迁移文件清单（白名单内排除项）的单一数据源是 private 仓库
-pyproject.toml 的 `[tool.novel-crawler.migration] exclude`（与
+pyproject.toml 的 `[tool.novel-downloader.migration] exclude`（与
 PUBLIC_MANIFEST.md「白名单内排除」保持一致），本脚本不再硬编码。
 """
 
@@ -32,13 +32,13 @@ INCLUDE_PATTERNS = [
     "frontend/**",
     "cli/**",
     "shared/**",
-    "android/**",
     "scripts/**",
     "tests/**",
     ".github/workflows/**",
-    "README.md",
     "LICENSE",
     "requirements.txt",
+    "init_config.py",     # 运行必需：backend/main.py 的 lifespan 用它做首次配置初始化
+    "template/**",        # 配置模板（含未公开源名的 sites 配置由 pyproject exclude 排除）
     "docs/README.md",
     "docs/project/**",
     "docs/build/**",
@@ -56,6 +56,9 @@ SENSITIVE_PATTERNS = [
 # public 仓库专属文件（白名单外但允许存在，不被"多余"检查拦截）
 PUBLIC_ONLY_FILES = {
     ".gitignore",
+    "README.md",         # private 无此文件（public 自维护），白名单不再列它
+    "CHANGELOG.md",      # public 自维护（清单规定不从 private 迁移 changelog）
+    "CONTRIBUTING.md",   # public 自维护
 }
 
 # 豁免敏感扫描的文件（如本脚本自身及测试敏感扫描的测试，均含敏感词定义）
@@ -70,7 +73,7 @@ SKIP_DIRS = {".git", "__pycache__", "node_modules", "dist", ".reasonix", ".codeg
 
 
 def load_exclude_patterns(private_root: Path) -> list[str]:
-    """从 pyproject.toml 的 `[tool.novel-crawler.migration] exclude` 读取非迁移文件清单。
+    """从 pyproject.toml 的 `[tool.novel-downloader.migration] exclude` 读取非迁移文件清单。
 
     该段是排除清单的唯一数据源（与 PUBLIC_MANIFEST.md「白名单内排除」一致）。
     用正则提取字符串数组（避免运行时依赖 tomllib/tomli，Python 3.10 无内置 tomllib）。
@@ -80,14 +83,14 @@ def load_exclude_patterns(private_root: Path) -> list[str]:
         raise SystemExit(f"缺少 {pyproject}，无法读取非迁移文件清单")
     text = pyproject.read_text(encoding="utf-8")
     m = re.search(
-        r"\[tool\.novel-crawler\.migration\][^\[]*?"
+        r"\[tool\.novel-downloader\.migration\][^\[]*?"
         r"exclude\s*=\s*(\[[^\]]*\])",
         text,
         re.S,
     )
     if not m:
         raise SystemExit(
-            "pyproject.toml 缺少 [tool.novel-crawler.migration] 的 exclude 清单，"
+            "pyproject.toml 缺少 [tool.novel-downloader.migration] 的 exclude 清单，"
             "无法进行迁移校验（非迁移清单的唯一数据源）"
         )
     return re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(1))
@@ -152,7 +155,7 @@ def check(private: Path, public: Path) -> list[str]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="novel-crawler-public 迁移校验（三道防线）")
+    ap = argparse.ArgumentParser(description="novel-downloader-public 迁移校验（三道防线）")
     ap.add_argument("--private", type=Path, default=PRIVATE_DEFAULT, help="private 仓库根目录")
     ap.add_argument("--public", type=Path, default=PUBLIC_DEFAULT, help="public 仓库根目录")
     args = ap.parse_args()

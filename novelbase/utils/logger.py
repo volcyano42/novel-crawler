@@ -59,7 +59,7 @@ def _auto_configure() -> None:
         root = logging.getLogger("novelbase")
         root.setLevel(logging.DEBUG)
 
-        log_dir = Path(tempfile.gettempdir()) / f"novel-crawler-{datetime.now():%Y%m%d_%H%M%S}"
+        log_dir = Path(tempfile.gettempdir()) / f"novel-downloader-{datetime.now():%Y%m%d_%H%M%S}"
         log_dir.mkdir(parents=True, exist_ok=True)
         _log_file = log_dir / "novelbase.log"
 

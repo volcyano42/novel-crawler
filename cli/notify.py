@@ -62,11 +62,11 @@ def notify(config: dict, complete: int = 0, incomplete: int = 0):
         if sound == "bell":
             bell(count=1)
         elif sound == "system":
-            system_notify("novel-crawler", msg)
+            system_notify("novel-downloader", msg)
 
     if incomplete > 0 and on_incomplete:
         msg = f"不完整章节: {incomplete} 章"
         if sound == "bell":
             bell(count=2, interval=0.15)
         elif sound == "system":
-            system_notify("novel-crawler", msg)
+            system_notify("novel-downloader", msg)

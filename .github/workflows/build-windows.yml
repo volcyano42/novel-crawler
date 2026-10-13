@@ -24,9 +24,9 @@ jobs:
         id: ver
         shell: pwsh
         run: |
-          $content = Get-Content "novelbase\__init__.py" -Raw
-          $m = [regex]::Match($content, '__version__\s*=\s*"([^"]+)"')
-          if (-not $m.Success) { Write-Error "无法从 novelbase\__init__.py 获取版本号"; exit 1 }
+          $content = Get-Content pyproject.toml -Raw
+          $m = [regex]::Match($content, 'version = "([^"]+)"')
+          if (-not $m.Success) { Write-Error "无法从 pyproject.toml 获取版本号"; exit 1 }
           $VERSION = $m.Groups[1].Value
           Write-Output "version=$VERSION" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "版本号: $VERSION"
@@ -38,7 +38,7 @@ jobs:
       - name: 校验产物
         shell: pwsh
         run: |
-          $dst = "dist\novel-crawler-web-portable-${{ steps.ver.outputs.version }}-windows-x64.zip"
+          $dst = "dist\novel-downloader-web-portable-${{ steps.ver.outputs.version }}-windows-x64.zip"
           Write-Host "dist 内容:"
           Get-ChildItem dist | Format-Table Name, Length -AutoSize
           if (-not (Test-Path $dst)) { Write-Error "未找到产物: $dst"; exit 1 }
@@ -47,7 +47,7 @@ jobs:
       - name: Upload zip
         uses: actions/upload-artifact@v4
         with:
-          name: novel-crawler-web-portable-${{ steps.ver.outputs.version }}-windows-x64
-          path: dist/novel-crawler-web-portable-${{ steps.ver.outputs.version }}-windows-x64.zip
+          name: novel-downloader-web-portable-${{ steps.ver.outputs.version }}-windows-x64
+          path: dist/novel-downloader-web-portable-${{ steps.ver.outputs.version }}-windows-x64.zip
           if-no-files-found: error
           retention-days: 3

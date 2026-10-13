@@ -24,6 +24,11 @@ class NovelMeta(BaseModel):
     count: int | None = None
     cover: CoverData | None = None
     extra: dict | None = None
+    source_name: str | None = None      # 来源（user_data.novel_sources；无记录为 None）
+
+
+class SetSourceRequest(BaseModel):
+    source_name: str
 
 
 class ImageData(BaseModel):

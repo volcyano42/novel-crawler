@@ -1,8 +1,6 @@
 """配置层测试：Options / APIOptions / RequestsOptions / BrowserOptions / ExportOptions"""
 from __future__ import annotations
 
-import pytest
-
 from novelbase.core.options import (
     Options, APIOptions, RequestsOptions, BrowserOptions,
     ExportOptions,
@@ -16,8 +14,8 @@ from novelbase.core.options import (
 class TestAPIOptions:
     def test_defaults(self):
         o = APIOptions()
-        assert o.name is None
-        assert o.delay == (3, 5)
+        assert not hasattr(o, "name")
+        assert o.delay == (0, 0)
         assert o.timeout == 30
         assert o.retry_times == 3
         assert o.backoff_factor == 2
@@ -25,8 +23,7 @@ class TestAPIOptions:
         assert o.params is None
 
     def test_custom(self):
-        o = APIOptions(name="myapi", key="sk-xxx", params={"site": "fanqie"})
-        assert o.name == "myapi"
+        o = APIOptions(key="sk-xxx", params={"site": "fanqie"})
         assert o.key == "sk-xxx"
         assert o.params == {"site": "fanqie"}
 
@@ -81,7 +78,7 @@ class TestExportOptions:
         o = ExportOptions(output_path="/tmp/out")
         assert str(o.output_path) == "/tmp/out"
         assert o.enabled is True
-        assert o.file_name_template == "{name}"
+        assert o.file_name_template == "{title}"
 
     def test_custom(self):
         o = ExportOptions(
@@ -112,8 +109,7 @@ class TestOptions:
         assert o.mode == "invalid"
 
     def test_set_api_options(self):
-        o = Options().set_api_options(name="test", key="sk-xxx")
-        assert o.api.name == "test"
+        o = Options().set_api_options(key="sk-xxx")
         assert o.api.key == "sk-xxx"
 
     def test_set_requests_options(self):

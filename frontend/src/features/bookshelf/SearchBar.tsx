@@ -1,91 +1,61 @@
 import {BookOpen, Link, Loader2, Search, X} from "lucide-react";
-import {type KeyboardEvent, useEffect, useRef, useState} from "react";
-import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from "@/components/ui/select";
+import {type KeyboardEvent, useEffect, useMemo, useRef, useState} from "react";
+import {Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue} from "@/components/ui/select";
 import {cn} from "@/lib/utils";
+import type {SourceOption} from "@/api/endpoints";
 
 interface SearchBarProps {
-  onSearch: (query: string, filters: SearchFilters) => void;
-  platforms?: { id: string; label: string }[];
-  engineModes?: string[];
-  platformModes?: Record<string, string[]>;
+  /** 标题搜索并发勾选的书源；URL 直达携带用户手选的单个书源。 */
+  onSearch: (query: string, opts?: { source?: string; sources?: string[] }) => void;
+  sources?: SourceOption[];
   loading?: boolean;
   defaultQuery?: string;
   /** 外部回填（点击搜索历史）：nonce 变化时同步到内部 state，不触发搜索 */
-  prefill?: { nonce: number; query: string; platform?: string; mode?: string; variant?: string } | null;
-  /** platform → mode → variants（browser/requests 也有 variant，如 default） */
-  modeVariants?: Record<string, Record<string, string[]>>;
-}
-
-export interface SearchFilters {
-  platform?: string; mode?: string; variant?: string;
+  prefill?: { nonce: number; query: string; source?: string } | null;
 }
 
 type SearchTab = "url" | "title";
 
-const MODE_LABELS: Record<string, string> = { browser: "Browser", requests: "Requests", api: "API" };
-
-function ModeSelect({ modes, selected, onSelect, className }: {
-  modes: string[]; selected: string; onSelect: (m: string) => void; className?: string;
-}) {
-  return (
-    <Select value={selected} onValueChange={onSelect}>
-      <SelectTrigger className={cn("w-[110px] shrink-0", className)}>
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        {modes.map(m => (
-          <SelectItem key={m} value={m}>{MODE_LABELS[m] ?? m}</SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  );
-}
-
-export function SearchBar({ onSearch, platforms = [], engineModes = [], platformModes = {}, loading, defaultQuery = "", prefill, modeVariants = {} }: SearchBarProps) {
+export function SearchBar({ onSearch, sources = [], loading, defaultQuery = "", prefill }: SearchBarProps) {
   const [tab, setTab] = useState<SearchTab>("title");
   const [query, setQuery] = useState(defaultQuery);
-  const [platform, setPlatform] = useState("all");
-  const [mode, setMode] = useState(engineModes[0] ?? "browser");
-  const [variant, setVariant] = useState<string | undefined>();
-  const [shakeVariant, setShakeVariant] = useState(false);
+  const [source, setSource] = useState("");
+  const [shake, setShake] = useState(false);
 
-  // 平台选择后，使用该平台支持的模式；全平台用全局列表
-  const platModes = platform !== "all" ? (platformModes[platform] ?? engineModes) : engineModes;
-  // 标题搜索 + 全部/起点时去掉 API 模式（无 API variant 的平台）
-  const hasApiVariant = platform !== "all" ? (modeVariants[platform]?.["api"]?.length ?? 0) > 0 : Object.keys(modeVariants).length > 0;
-  const hideApiMode = tab === "title" && !hasApiVariant;
-  const availableModes = hideApiMode ? platModes.filter(m => m !== "api") : platModes;
-  const effectiveMode = availableModes.includes(mode) ? mode : availableModes[0] ?? "browser";
+  // 勾选集合：null = 未初始化（= 全选）。不持久化、不在 sources 刷新时重置用户选择。
+  const [picked, setPicked] = useState<string[] | null>(null);
+  const allNames = useMemo(() => sources.map(s => s.name), [sources]);
+  const selected = picked ?? allNames;
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
 
-  // 平台/标签切换时，若当前模式不再可用则回退到第一个可用模式。
-  // availableModes 每次渲染都是新数组、不能直接入依赖，故用 ref 读取最新值，
-  // 以保持原触发时机（依赖 mode 会与下面「URL 模式无 API 时切 browser」的 effect 互相覆盖）。
-  const latestModesRef = useRef({ availableModes, mode });
-  latestModesRef.current = { availableModes, mode };
-  useEffect(() => {
-    const { availableModes: modes, mode: current } = latestModesRef.current;
-    if (!modes.includes(current)) {
-      setMode(modes[0] ?? "browser");
-      setVariant(undefined);
+  // 分组 → 该组书源（"" 走「未分组」桶，排在最后）
+  const groupedSources = useMemo(() => {
+    const groups = new Map<string, SourceOption[]>();
+    for (const s of sources) {
+      if (!groups.has(s.group)) groups.set(s.group, []);
+      groups.get(s.group)!.push(s);
     }
-  }, [platform, tab]);
+    return [...groups.entries()].sort(([a], [b]) => (a === "" ? 1 : b === "" ? -1 : a.localeCompare(b)));
+  }, [sources]);
+
+  const toggleAll = () => setPicked(selected.length === allNames.length ? [] : allNames);
+  const pickGroup = (group: string) => setPicked(sources.filter(s => s.group === group).map(s => s.name));
+  const toggleOne = (name: string) => setPicked(selectedSet.has(name) ? selected.filter(n => n !== name) : [...allNames.filter(n => selectedSet.has(n) || n === name)]);
 
   const trigger = () => {
     const q = query.trim();
     if (!q) return;
-    const m = tab === "url" ? urlEffectiveMode : (hideApiMode ? effectiveMode : mode);
-    // 多 variant 未选 → 整块抖动并拦截（单 variant 自动选，不校验）
-    const variants = tab === "url" ? urlVariants : platformVariants;
-    const effectiveVariant = variant ?? (variants.length === 1 ? variants[0] : undefined);
-    if (variants.length > 1 && !variant) {
-      setShakeVariant(true);
-      setTimeout(() => setShakeVariant(false), 400);
-      return;
-    }
     if (tab === "url") {
-      onSearch(q, { mode: m, variant: effectiveVariant });
+      if (!source) {
+        setShake(true);
+        setTimeout(() => setShake(false), 400);
+        return;
+      }
+      onSearch(q, { source });
     } else {
-      onSearch(q, { platform, mode: m, variant });
+      // 勾选为空：按钮已 disabled；此处再 guard 一次，防止 Enter 键绕过（spec §6.5：不发请求）
+      if (selected.length === 0) return;
+      onSearch(q, { sources: selected });
     }
   };
 
@@ -98,61 +68,20 @@ export function SearchBar({ onSearch, platforms = [], engineModes = [], platform
     setQuery("");
   };
 
-  // 标题模式 全部/起点 自动切到 browser
-  useEffect(() => {
-    if (hideApiMode && mode === "api") {
-      setMode("browser");
-      setVariant(undefined);
-    }
-  }, [hideApiMode, mode]);
-
-  // 点击搜索历史回填：只在 nonce 变化时同步一次 keyword + platform + mode + variant
-  // （mode 为空默认 requests）。prefill 是对象、每次渲染可能是新引用，直接入依赖
-  // 会让用户在输入框打字时被反复覆盖，故用 ref 读取最新值。
+  // 点击搜索历史回填：只在 nonce 变化时同步一次 keyword + source。
+  // prefill 是对象、每次渲染可能是新引用，直接入依赖会让用户在输入框打字时被反复覆盖，故用 ref。
   const prefillRef = useRef(prefill);
   prefillRef.current = prefill;
   useEffect(() => {
     const p = prefillRef.current;
     if (!p) return;
     setQuery(p.query);
-    if (p.platform) setPlatform(p.platform);
-    setMode(p.mode || "requests");
-    // 始终同步 variant：历史条目的 variant 为空时清空，避免残留上一次选择的
-    // 变体（如 fanqie api 的 rain）与回填的 platform/mode 不匹配
-    setVariant(p.variant || undefined);
+    setSource(p.source ?? "");
   }, [prefill?.nonce]);
 
   const clear = () => {
     setQuery("");
   };
-
-  const allPlatforms = [{ id: "all", label: "全平台" } as const, ...platforms.map(p => ({ id: p.id, label: p.label }))];
-
-  const currentPlatform = platform || "all";
-  const platformVariants = modeVariants[platform]?.[effectiveMode] ?? [];
-
-  // URL 模式：从输入中检测平台
-  const urlPlatform = (() => {
-    if (tab !== "url") return null;
-    if (query.includes("fanqienovel.com") || query.includes("changdunovel.com")) return "fanqie";
-    return null;
-  })();
-  const effectiveUrlPlatform = urlPlatform;
-  const urlVariantsByMode = effectiveUrlPlatform ? (modeVariants[effectiveUrlPlatform] ?? {}) : {};
-  const urlPlatModes = effectiveUrlPlatform ? (platformModes[effectiveUrlPlatform] ?? engineModes) : engineModes;
-  const urlHasApi = (urlVariantsByMode["api"] ?? []).length > 0;
-  const urlHideApi = !urlHasApi;
-  const urlModes = urlHideApi ? urlPlatModes.filter(m => m !== "api") : urlPlatModes;
-  const urlEffectiveMode = urlModes.includes(mode) ? mode : urlModes[0] ?? "browser";
-  const urlVariants = urlVariantsByMode[urlEffectiveMode] ?? [];
-
-  // URL 模式无 API 时自动切 browser；urlHideApi 是布尔值，可安全入依赖
-  useEffect(() => {
-    if (tab === "url" && urlHideApi && mode === "api") {
-      setMode("browser");
-      setVariant(undefined);
-    }
-  }, [tab, effectiveUrlPlatform, mode, urlHideApi]);
 
   return (
     <div className="flex flex-col gap-3">
@@ -218,30 +147,25 @@ export function SearchBar({ onSearch, platforms = [], engineModes = [], platform
               搜索
             </button>
           </div>
-          {urlModes.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2">
-              <ModeSelect modes={urlModes} selected={urlEffectiveMode} onSelect={m => { setMode(m); if (m !== "api") setVariant(undefined); }} />
-            </div>
-          )}
-          {urlVariants.length > 1 && (
-            <div className={cn("rounded-lg px-1.5 py-1 transition-colors", shakeVariant && "border border-red-300 bg-red-50 animate-shake")}>
-              <p className="text-[11px] text-slate-400 mb-1">{urlEffectiveMode === "api" ? "选择提供商" : "选择变体"}</p>
-              <div className="flex flex-wrap items-center gap-1">
-                {urlVariants.map(p => (
-                  <button
-                    key={p}
-                    onClick={() => setVariant(variant === p ? undefined : p)}
-                    className={cn(
-                      "rounded-lg px-2 py-1 text-[11px] font-medium transition-colors",
-                      variant === p ? "bg-indigo-500 text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200",
-                    )}
-                  >
-                    {p}
-                  </button>
+          <div className={cn("flex flex-wrap items-center gap-2 rounded-lg px-1.5 py-1 transition-colors", shake && "border border-red-300 bg-red-50 animate-shake")}>
+            <span className="text-[11px] text-slate-400">书源</span>
+            <Select value={source} onValueChange={setSource}>
+              <SelectTrigger className="w-[180px] shrink-0">
+                <SelectValue placeholder="选择书源" />
+              </SelectTrigger>
+              <SelectContent>
+                {groupedSources.map(([group, items]) => (
+                  <SelectGroup key={group}>
+                    <SelectLabel className="px-2 py-1 text-[10px] text-slate-400">{group || "未分组"}</SelectLabel>
+                    {items.map(({ name, alias }) => (
+                      <SelectItem key={name} value={name}>{alias}</SelectItem>
+                    ))}
+                  </SelectGroup>
                 ))}
-              </div>
-            </div>
-          )}
+              </SelectContent>
+            </Select>
+            <span className="text-[11px] text-slate-400">URL 解析需指定书源（无自动推断）</span>
+          </div>
         </div>
       )}
 
@@ -273,47 +197,56 @@ export function SearchBar({ onSearch, platforms = [], engineModes = [], platform
             </div>
             <button
               onClick={trigger}
-              disabled={loading || !query.trim()}
+              disabled={loading || !query.trim() || selected.length === 0}
               className="rounded-xl bg-indigo-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-600 transition-colors disabled:opacity-50 shrink-0"
             >
               搜索
             </button>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {/* 平台选择 */}
-            <Select value={currentPlatform} onValueChange={v => { setPlatform(v); setVariant(undefined); }}>
-              <SelectTrigger className="w-[100px] shrink-0">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {allPlatforms.map(p => (
-                  <SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {availableModes.length > 0 && (
-              <ModeSelect modes={availableModes} selected={effectiveMode} onSelect={m => { setMode(m); if (m !== "api") setVariant(undefined); }} />
-            )}
-          </div>
-          {platformVariants.length > 1 && (
-            <div className={cn("rounded-lg px-1.5 py-1 transition-colors", shakeVariant && "border border-red-300 bg-red-50 animate-shake")}>
-              <p className="text-[11px] text-slate-400 mb-1">{effectiveMode === "api" ? "选择提供商" : "选择变体"}</p>
-              <div className="flex flex-wrap items-center gap-1">
-                {platformVariants.map(p => (
-                  <button
-                    key={p}
-                    onClick={() => setVariant(variant === p ? undefined : p)}
-                    className={cn(
-                      "rounded-lg px-2 py-1 text-[11px] font-medium transition-colors",
-                      variant === p ? "bg-indigo-500 text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200",
-                    )}
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
-            </div>
+          {selected.length === 0 && (
+            <p className="px-1 text-[11px] text-red-400">请至少勾选一个书源</p>
           )}
+          <div className={cn("flex flex-col gap-2 rounded-xl border border-white/20 bg-white/50 p-2 backdrop-blur-sm dark:border-slate-600/30 dark:bg-slate-800/40",
+                             shake && "border-red-300 bg-red-50 animate-shake")}>
+            {/* 框 1：批量单选（全选 / 各分组 / 未分组） */}
+            <div className="flex flex-wrap items-center gap-1">
+              <button onClick={toggleAll}
+                className={cn("rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors",
+                  selected.length === allNames.length
+                    ? "bg-indigo-100 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300"
+                    : "text-slate-500 hover:text-slate-700 dark:text-slate-400")}>
+                {selected.length === allNames.length ? "全不选" : "全选"}
+              </button>
+              {groupedSources.map(([group, items]) => {
+                const names = items.map(i => i.name);
+                const active = selected.length === names.length && names.every(n => selectedSet.has(n));
+                return (
+                  <button key={group} onClick={() => pickGroup(group)}
+                    className={cn("rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors",
+                      active ? "bg-indigo-100 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300"
+                             : "text-slate-500 hover:text-slate-700 dark:text-slate-400")}>
+                    {group || "未分组"}
+                  </button>
+                );
+              })}
+              <span className="ml-auto text-[11px] text-slate-400">已选 {selected.length}/{allNames.length}</span>
+            </div>
+            {/* 框 2：逐源复选（显示别名，按分组分节） */}
+            <div className="flex flex-col gap-1">
+              {groupedSources.map(([group, items]) => (
+                <div key={group} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span className="w-16 shrink-0 truncate text-[10px] text-slate-400">{group || "未分组"}</span>
+                  {items.map(s => (
+                    <label key={s.name} className="flex cursor-pointer items-center gap-1 text-[11px] text-slate-600 dark:text-slate-300">
+                      <input type="checkbox" checked={selectedSet.has(s.name)} onChange={() => toggleOne(s.name)} className="h-3.5 w-3.5 rounded border-slate-300" />
+                      <span>{s.alias}</span>
+                    </label>
+                  ))}
+                </div>
+              ))}
+              {sources.length === 0 && <span className="px-1 text-[11px] text-slate-400">没有可用的书源</span>}
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -8,13 +8,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+from PIL import Image
+
 from ..core.options import ExportOptions
-from ..models.novel import Chapter, Novel, Illustration
+from ..models.novel import Chapter, Illustration, Novel
 from ..utils.logger import get_logger
 
 _log = get_logger("novelbase.exporters.epub")
-
-from PIL import Image
 
 # ═══════════════════════════════════════════════════════════════════
 # 常量
@@ -101,7 +101,7 @@ img {
 class EPUBExportOptions(ExportOptions):
     format: str = "epub"
     css_style: str = "default"
-    file_name_template: str = "{name}"
+    file_name_template: str = "{title}"
     include_toc: bool = True
     encoding: str = "utf-8"
     compression: Literal["deflate", "bzip2", "stored"] = "deflate"
@@ -351,7 +351,6 @@ def _build_file_path(novel: Novel, options: EPUBExportOptions) -> Path:
 
     file_name_template = getattr(options, "file_name_template", "{title}")
     variables = SafeDict({
-        "name": novel.title if novel else "",
         "title": novel.title if novel else "",
         "author": novel.author if novel else "",
         "novel_id": novel.id if novel else "",
@@ -410,7 +409,7 @@ def _render_opf(
         spine.append(f'    <itemref idref="{cid}"/>')
 
     img_seq = 0
-    for img, fname in reg["img_list"]:
+    for _img, fname in reg["img_list"]:
         if cover_img_name and fname == cover_img_name:
             continue
         img_seq += 1
@@ -432,7 +431,7 @@ def _render_opf(
         f'    <dc:language>zh-CN</dc:language>\n'
         f'    <dc:description>{desc}</dc:description>\n'
         f'    <dc:date>{datetime.now().strftime("%Y-%m-%d")}</dc:date>\n'
-        '    <meta name="generator" content="novel-crawler"/>\n'
+        '    <meta name="generator" content="novel-downloader"/>\n'
         '  </metadata>\n'
         '  <manifest>\n'
         + "\n".join(manifest)

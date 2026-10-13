@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from base64 import b64encode, b64decode
-from collections.abc import Iterable
+from base64 import b64decode, b64encode
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Sequence, Iterator
+from typing import Any
 
 from box import Box
 
@@ -60,8 +60,8 @@ class Illustration:
 
         try:
             from io import BytesIO
-            from PIL import Image
 
+            from PIL import Image
             from pillow_heif import register_heif_opener
             register_heif_opener()
 
@@ -98,8 +98,8 @@ class Illustration:
             return self
         try:
             from io import BytesIO
-            from PIL import Image
 
+            from PIL import Image
             from pillow_heif import register_heif_opener
             register_heif_opener()
 
@@ -284,12 +284,12 @@ class Novel:
     cover: Illustration | None = None
     chapters: Chapters = field(default_factory=Chapters)
     extra: Box = field(default_factory=Box)
-    # serial 自动模式标记：serial==0 的书源进入后持续跟随本地章节数
+    # serial 自动模式标记：serial==0 的书源（如 92xs）进入后持续跟随本地章节数
     _serial_auto: bool = field(default=False, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # serial 兜底：serial 为 0 但已有章节时，进入自动模式跟随本地章节数
-        # （拿不到源站总章节数的书源，serial 恒为 0）
+        # （92xs 等书源拿不到源站总章节数，serial 恒为 0）
         if not self.serial and len(self.chapters):
             self.serial = len(self.chapters)
             self._serial_auto = True
@@ -320,6 +320,6 @@ class SearchResult:
     author: str
     url: str | None = None
     description: str | None = None
-    platform: str = ""
+    source_name: str = ""
     cover_url: str | None = None
     extra: Box = field(default_factory=Box)

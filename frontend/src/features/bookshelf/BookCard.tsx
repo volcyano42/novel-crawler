@@ -32,9 +32,10 @@ interface BookCardProps {
   groups?: string[];
   currentGroup?: string;
   onDelete?: (novelId: string) => void;
+  sourceName?: string | null;
 }
 
-export function BookCard({ title, novelId, cover, onRead, className, groups = [], currentGroup, onDelete }: BookCardProps) {
+export function BookCard({ title, novelId, cover, onRead, className, groups = [], currentGroup, onDelete, sourceName }: BookCardProps) {
   const [showExport, setShowExport] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -93,17 +94,7 @@ export function BookCard({ title, novelId, cover, onRead, className, groups = []
       const task = await exportMut.mutateAsync(body);
       if (task.status === "completed" && task.task_id) {
         toast("导出成功，正在下载…", "success");
-        const androidBridge = (window as unknown as {
-          AndroidBridge?: { saveExport(taskId: string, fileName: string): void };
-        }).AndroidBridge;
-        if (androidBridge) {
-          // Android APK：走系统"保存到"对话框（SAF）；文件名清洗非法字符
-          const safeTitle = title.replace(/[\\/:*?"<>|]/g, "_");
-          androidBridge.saveExport(task.task_id, `${safeTitle}.zip`);
-        } else {
-          // 桌面/浏览器：现有逻辑
-          window.open(`/api/v2/export/download/${task.task_id}`, "_self");
-        }
+        window.open(`/api/v2/export/download/${task.task_id}`, "_self");
       } else {
         toast(`导出失败：${task.error || "未知错误"}`, "error");
       }
@@ -111,7 +102,7 @@ export function BookCard({ title, novelId, cover, onRead, className, groups = []
       toast(`导出失败：${(e as Error).message || "网络错误"}`, "error");
     }
     finally { setExporting(false); setShowExport(false); }
-  }, [novelId, exporting, exportMut, toast, title]);
+  }, [novelId, exporting, exportMut, toast]);
 
   const handleDelete = useCallback(() => {
     if (!novelId) return;
@@ -222,7 +213,7 @@ export function BookCard({ title, novelId, cover, onRead, className, groups = []
           )}
         </div>
         <div className="flex flex-1 flex-col gap-1 px-4 py-3">
-          {novelId && <p className="truncate text-[11px] text-slate-400 font-mono">{novelId}</p>}
+          {sourceName && <p className="truncate text-[11px] text-slate-400">{sourceName}</p>}
           <TooltipProvider delayDuration={500}>
             <Tooltip>
               <TooltipTrigger asChild>

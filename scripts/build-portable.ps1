@@ -1,4 +1,4 @@
-﻿# Build portable zip: novel-crawler-web-portable-{version}-windows-x64.zip
+﻿# Build portable zip: novel-downloader-web-portable-{version}-windows-x64.zip
 # Usage: .\build-portable.ps1 [-Version <version>]
 param(
     [string]$Version
@@ -129,7 +129,7 @@ echo   python\python.exe -m playwright install chromium
 echo 仅 requests / api 模式不受影响，可继续使用。
 echo.
 
-echo 正在启动 novel-crawler-web...
+echo 正在启动 novel-downloader-web...
 start "" /B python\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
 echo 等待服务就绪...
@@ -151,7 +151,7 @@ if not errorlevel 1 goto keepalive
     $batContent | Set-Content -Path (Join-Path $portableDir "启动.bat") -Encoding UTF8
 
     $readmeContent = @'
-=== novel-crawler-web 便携版 ===
+=== novel-downloader-web 便携版 ===
 
 使用方法：
   1. 如需使用 browser 模式（Playwright），运行 `python\python.exe -m playwright install chromium` 下载浏览器
@@ -180,8 +180,8 @@ if not errorlevel 1 goto keepalive
         $Version = $versionLine.Matches.Groups[1].Value
     }
     Write-Host "--- Packaging zip (v$Version) ---" -ForegroundColor Cyan
-    # 产物命名与 Linux portable 统一：novel-crawler-web-portable-{version}-windows-x64.zip（无 v 前缀）
-    $zipName = "novel-crawler-web-portable-$Version-windows-x64.zip"
+    # 产物命名与 Linux portable 统一：novel-downloader-web-portable-{version}-windows-x64.zip（无 v 前缀）
+    $zipName = "novel-downloader-web-portable-$Version-windows-x64.zip"
     $zipPath = Join-Path $distDir $zipName
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
     Compress-Archive -Path (Join-Path $portableDir "*") -DestinationPath $zipPath -CompressionLevel Optimal

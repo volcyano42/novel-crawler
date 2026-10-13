@@ -46,9 +46,9 @@ class TestAuthenticationError:
         assert e.platform == "fanqie"
 
     def test_custom_message(self):
-        e = AuthenticationError(platform="custom", message="登录失败")
+        e = AuthenticationError(platform="qidian", message="登录失败")
         assert "登录失败" in str(e)
-        assert "custom" in str(e)
+        assert "qidian" in str(e)
 
 
 class TestNovelNotFoundError:

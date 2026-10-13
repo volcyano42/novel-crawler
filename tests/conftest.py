@@ -2,6 +2,12 @@ import pytest
 
 from novelbase.models.novel import Illustration, Chapter, Chapters, Novel, SearchResult
 
+
+@pytest.fixture(autouse=True)
+def _isolate_nld_env(monkeypatch):
+    """隔离 NLD_* 环境变量，防止跨用例泄漏。"""
+    monkeypatch.delenv("NLD_APP_DATA", raising=False)
+
 # ── Illustration fixtures ─────────────────────────────────────
 
 @pytest.fixture
