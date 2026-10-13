@@ -12,6 +12,7 @@
 3. **按所选书源搜索** — 前端搜索页支持「全选 / 按分组 / 未分组」与逐源复选（默认全选、不持久化），后端 `GET /download/search?sources=a,b,c` 接收逗号分隔的源名；URL 解析改为手动选源
 4. **下载并发模型重做** — 三层并发：任务级 `download.max_workers`（默认 3，超额任务显示「排队中」）、书源级 `concurrency`（跨任务共享）、能力级 `delay`（出厂默认 `[0,0]`，即不限速）
 5. **发行产物新增 Windows Nuitka exe** — `build-dist` 一次触发即产出 Windows portable / **Windows onefile exe** / Linux x64 / Linux arm64 / Termux portable
+6. **新增「番茄·oiapi」书源** — 经第三方服务 `https://oiapi.net/api/FqRead` 获取番茄小说信息与章节（`api` 模式，与 `browser` / `requests` 模式并存）；接口 `key` 由用户在 `config/sites/fanqie-api-oiapi.yaml` 自备，仓库内为空占位
 
 ### 变更
 
